@@ -6,8 +6,7 @@ Dashboard Streamlit para visualizar estadísticas DNS
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 import time
 from redis_client import DNSRedisClient
 from config import get_config
@@ -32,6 +31,7 @@ redis_config = config.get_redis_config()
 @st.cache_resource
 def get_redis_client(host, port, db, password):
     """Obtiene el cliente Redis (con caché)"""
+    # Crear una clave única basada en los parámetros para invalidar el caché cuando cambien
     return DNSRedisClient(
         host=host,
         port=port,
@@ -70,7 +70,47 @@ except Exception as e:
 
 # Botón de actualización manual
 if st.sidebar.button("🔄 Actualizar Datos"):
+    st.cache_resource.clear()  # Limpiar caché al actualizar
     st.rerun()
+
+# Sección de diagnóstico
+with st.sidebar.expander("🔍 Diagnóstico"):
+    try:
+        # Verificar conexión
+        redis_client.client.ping()
+        st.success("✅ Conexión a Redis: OK")
+        
+        # Obtener información de diagnóstico
+        diag_info = redis_client.get_diagnostic_info()
+        
+        if 'error' in diag_info:
+            st.error(f"❌ Error: {diag_info['error']}")
+        else:
+            st.info(f"📊 Total de claves DNS: {diag_info['total_keys']}")
+            
+            if diag_info['has_data']:
+                st.success("✅ Hay datos en Redis")
+                st.info(f"  - Clientes: {diag_info['client_keys']}")
+                st.info(f"  - Dominios: {diag_info['domain_keys']}")
+                st.info(f"  - Paquetes: {diag_info['packet_keys']}")
+                st.info(f"  - Tipos: {diag_info['type_keys']}")
+                st.info(f"  - Protocolos: {diag_info['protocol_keys']}")
+                st.info(f"  - Consultas recientes: {diag_info['recent_queries']}")
+                st.info(f"  - Clientes únicos: {diag_info['unique_clients']}")
+                st.info(f"  - Dominios únicos: {diag_info['unique_domains']}")
+            else:
+                st.warning("⚠️ No hay datos en Redis")
+                st.markdown("""
+                **Posibles causas:**
+                - El capturador DNS no está ejecutándose
+                - No hay tráfico DNS en la red
+                - El capturador está usando otra base de datos Redis
+                """)
+    except Exception as e:
+        st.error(f"❌ Error en diagnóstico: {e}")
+        import traceback
+        with st.expander("Detalles"):
+            st.code(traceback.format_exc())
 
 # Estadísticas generales
 st.header("📊 Estadísticas Generales")
@@ -101,8 +141,20 @@ try:
         else:
             st.metric("TCP %", "0%")
     
+    # Mostrar advertencia si no hay datos
+    if total_queries == 0 and unique_clients == 0 and unique_domains == 0:
+        st.warning("⚠️ No se encontraron datos en Redis. Asegúrate de que:")
+        st.markdown("""
+        1. El capturador DNS esté ejecutándose (`sudo python3 main.py`)
+        2. Haya tráfico DNS en la red
+        3. El capturador esté conectado al mismo servidor Redis
+        """)
+    
 except Exception as e:
     st.error(f"Error obteniendo estadísticas: {e}")
+    import traceback
+    with st.expander("Detalles del error"):
+        st.code(traceback.format_exc())
 
 st.markdown("---")
 

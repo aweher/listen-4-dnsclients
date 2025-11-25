@@ -205,6 +205,47 @@ class DNSRedisClient:
         
         return stats
     
+    def get_diagnostic_info(self) -> Dict[str, Any]:
+        """
+        Obtiene información de diagnóstico sobre el estado de Redis
+        
+        Returns:
+            Diccionario con información de diagnóstico
+        """
+        try:
+            pattern = "dns:*"
+            all_keys = list(self.client.scan_iter(match=pattern))
+            
+            client_keys = [k for k in all_keys if k.startswith("dns:client:")]
+            domain_keys = [k for k in all_keys if k.startswith("dns:domain:")]
+            packet_keys = [k for k in all_keys if k.startswith("dns:packet:")]
+            type_keys = [k for k in all_keys if k.startswith("dns:type:")]
+            protocol_keys = [k for k in all_keys if k.startswith("dns:protocol:")]
+            
+            # Verificar si existe el sorted set de consultas recientes
+            recent_count = self.client.zcard("dns:recent")
+            unique_clients_count = self.client.scard("dns:clients:unique")
+            unique_domains_count = self.client.scard("dns:domains:unique")
+            
+            return {
+                'total_keys': len(all_keys),
+                'client_keys': len(client_keys),
+                'domain_keys': len(domain_keys),
+                'packet_keys': len(packet_keys),
+                'type_keys': len(type_keys),
+                'protocol_keys': len(protocol_keys),
+                'recent_queries': recent_count,
+                'unique_clients': unique_clients_count,
+                'unique_domains': unique_domains_count,
+                'has_data': len(all_keys) > 0
+            }
+        except Exception as e:
+            logger.error(f"Error obteniendo información de diagnóstico: {e}")
+            return {
+                'error': str(e),
+                'has_data': False
+            }
+    
     def clear_all_data(self):
         """Elimina todos los datos DNS almacenados (¡CUIDADO!)"""
         pattern = "dns:*"
