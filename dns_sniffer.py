@@ -4,16 +4,13 @@ DNS Sniffer - Captura pasiva de paquetes DNS
 Escucha tráfico DNS en la interfaz de red y extrae información de las consultas
 """
 
-import socket
-import struct
 import json
 import threading
 import time
 from collections import deque
 from datetime import datetime
 from typing import Optional, Dict, Any
-from scapy.all import sniff, IP, UDP, TCP, DNS, Raw
-from scapy.layers.dns import DNSQR, DNSRR
+from scapy.all import sniff, IP, UDP, TCP, DNS
 import logging
 
 logging.basicConfig(
@@ -113,7 +110,14 @@ class DNSSniffer:
             if dns_layer.qr == 0 and dns_layer.qd:  # Es una query
                 query = dns_layer.qd
                 if query:
-                    domain = query.qname.decode('utf-8').rstrip('.')
+                    try:
+                        # Decodificar nombre DNS de forma segura
+                        if isinstance(query.qname, bytes):
+                            domain = query.qname.decode('utf-8', errors='replace').rstrip('.')
+                        else:
+                            domain = str(query.qname).rstrip('.')
+                    except Exception:
+                        domain = str(query.qname).rstrip('.')
                     qtype = query.qtype
                     qtype_name = self.DNS_TYPES.get(qtype, f'UNKNOWN({qtype})')
                     queries.append({
@@ -128,15 +132,24 @@ class DNSSniffer:
                 for i in range(dns_layer.ancount):
                     if i < len(dns_layer.an):
                         answer = dns_layer.an[i]
-                        domain = answer.rrname.decode('utf-8').rstrip('.') if hasattr(answer, 'rrname') else ''
+                        # Decodificar nombre DNS de forma segura
+                        domain = ''
+                        if hasattr(answer, 'rrname'):
+                            try:
+                                if isinstance(answer.rrname, bytes):
+                                    domain = answer.rrname.decode('utf-8', errors='replace').rstrip('.')
+                                else:
+                                    domain = str(answer.rrname).rstrip('.')
+                            except Exception:
+                                domain = str(answer.rrname).rstrip('.')
                         rtype = answer.type
                         rtype_name = self.DNS_TYPES.get(rtype, f'UNKNOWN({rtype})')
                         rdata = ''
                         if hasattr(answer, 'rdata'):
                             if isinstance(answer.rdata, bytes):
                                 try:
-                                    rdata = answer.rdata.decode('utf-8')
-                                except:
+                                    rdata = answer.rdata.decode('utf-8', errors='replace')
+                                except Exception:
                                     rdata = str(answer.rdata)
                             else:
                                 rdata = str(answer.rdata)
@@ -166,7 +179,17 @@ class DNSSniffer:
                 main_type = answers[0]['type']
             
             protocol = 'TCP' if is_tcp else 'UDP'
-            port = packet[TCP].dport if is_tcp else packet[UDP].dport
+            
+            # Obtener puerto de forma segura
+            try:
+                if is_tcp and packet.haslayer(TCP):
+                    port = packet[TCP].dport
+                elif is_udp and packet.haslayer(UDP):
+                    port = packet[UDP].dport
+                else:
+                    return None
+            except (AttributeError, IndexError):
+                return None
             
             # Solo procesar si es tráfico DNS (puerto 53)
             if port != 53:
@@ -247,58 +270,68 @@ class DNSSniffer:
         Almacena datos DNS en Redis (método individual, para compatibilidad)
         
         Args:
-            redis_client: Cliente Redis
+            redis_client: Cliente Redis (DNSRedisClient o redis.Redis)
             dns_data: Datos del paquete DNS
         """
+        # Obtener el cliente Redis real (puede ser DNSRedisClient o redis.Redis)
+        if hasattr(redis_client, 'client'):
+            # Es un DNSRedisClient, usar el cliente interno
+            client = redis_client.client
+        else:
+            # Es un redis.Redis directo
+            client = redis_client
+        
         timestamp = datetime.now()
         timestamp_str = timestamp.strftime('%Y%m%d%H%M%S%f')
         
         # Almacenar el paquete completo
         key = f"dns:packet:{timestamp_str}"
-        redis_client.setex(key, 86400 * 7, json.dumps(dns_data))  # Retener 7 días
+        client.setex(key, 86400 * 7, json.dumps(dns_data))  # Retener 7 días
         
         # Estadísticas por IP de origen
         src_ip_key = f"dns:client:{dns_data['src_ip']}"
-        redis_client.incr(f"{src_ip_key}:count")
-        redis_client.expire(f"{src_ip_key}:count", 86400 * 30)  # 30 días
+        client.incr(f"{src_ip_key}:count")
+        client.expire(f"{src_ip_key}:count", 86400 * 30)  # 30 días
         
         # Dominios más consultados
         domain_key = f"dns:domain:{dns_data['domain']}"
-        redis_client.incr(f"{domain_key}:count")
-        redis_client.expire(f"{domain_key}:count", 86400 * 30)
+        client.incr(f"{domain_key}:count")
+        client.expire(f"{domain_key}:count", 86400 * 30)
         
         # Estadísticas por tipo de registro
         record_type_key = f"dns:type:{dns_data['record_type']}"
-        redis_client.incr(f"{record_type_key}:count")
-        redis_client.expire(f"{record_type_key}:count", 86400 * 30)
+        client.incr(f"{record_type_key}:count")
+        client.expire(f"{record_type_key}:count", 86400 * 30)
         
         # Estadísticas TCP vs UDP
         protocol_key = f"dns:protocol:{dns_data['protocol']}"
-        redis_client.incr(f"{protocol_key}:count")
-        redis_client.expire(f"{protocol_key}:count", 86400 * 30)
+        client.incr(f"{protocol_key}:count")
+        client.expire(f"{protocol_key}:count", 86400 * 30)
         
         # Timestamp para consultas recientes
-        redis_client.zadd("dns:recent", {key: timestamp.timestamp()})
-        redis_client.expire("dns:recent", 86400 * 7)  # Mantener últimos 7 días
+        client.zadd("dns:recent", {key: timestamp.timestamp()})
+        client.expire("dns:recent", 86400 * 7)  # Mantener últimos 7 días
         
         # IPs de origen únicas
-        redis_client.sadd("dns:clients:unique", dns_data['src_ip'])
-        redis_client.expire("dns:clients:unique", 86400 * 30)
+        client.sadd("dns:clients:unique", dns_data['src_ip'])
+        client.expire("dns:clients:unique", 86400 * 30)
         
         # Dominios únicos
-        redis_client.sadd("dns:domains:unique", dns_data['domain'])
-        redis_client.expire("dns:domains:unique", 86400 * 30)
+        client.sadd("dns:domains:unique", dns_data['domain'])
+        client.expire("dns:domains:unique", 86400 * 30)
     
     def _flush_buffer(self):
         """
         Escribe todos los paquetes del buffer a Redis usando pipeline para optimizar
         """
-        if not self.redis_client or len(self.buffer) == 0:
+        if not self.redis_client:
             return
         
-        # Extraer todos los paquetes del buffer
+        # Extraer todos los paquetes del buffer (thread-safe)
         packets_to_write = []
         with self.buffer_lock:
+            if len(self.buffer) == 0:
+                return
             while self.buffer:
                 packets_to_write.append(self.buffer.popleft())
         
@@ -381,11 +414,12 @@ class DNSSniffer:
             
             # Flush si ha pasado el intervalo y hay datos
             if (current_time - self.last_flush) >= self.flush_interval:
-                with self.buffer_lock:
-                    buffer_size = len(self.buffer)
-                    if buffer_size > 0:
-                        logger.debug(f"Flush periódico: {buffer_size} paquetes en buffer")
-                        self._flush_buffer()
+                # Verificar tamaño del buffer sin lock (no crítico, solo para logging)
+                buffer_size = len(self.buffer) if hasattr(self, 'buffer') else 0
+                if buffer_size > 0:
+                    logger.debug(f"Flush periódico: {buffer_size} paquetes en buffer")
+                # _flush_buffer() maneja el locking internamente
+                self._flush_buffer()
     
     def _stats_thread_worker(self, interval: float = 10.0):
         """
