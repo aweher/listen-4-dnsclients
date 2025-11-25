@@ -10,3 +10,12 @@ sniffer:
   interface: null  # null = todas las interfaces
   filter: "port 53"  # Filtro BPF para captura
 
+# Configuración de autenticación del dashboard
+auth:
+  users:
+    - username: admin
+      password: admin123  # Cambiar en producción
+    # Agregar más usuarios aquí:
+    # - username: usuario2
+    #   password: contraseña2
+

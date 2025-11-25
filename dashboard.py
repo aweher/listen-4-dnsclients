@@ -19,32 +19,59 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Cargar configuración
+# Cargar configuración de autenticación
 config = get_config()
+auth_config = config.get_auth_config()
+
+# Inicializar sesión
+if 'authenticated' not in st.session_state:
+    st.session_state.authenticated = False
+
+# Función de autenticación
+def check_password(user, pwd):
+    """Verifica las credenciales contra la configuración"""
+    if user in auth_config:
+        return auth_config[user] == pwd
+    return False
+
+# Pantalla de login
+if not st.session_state.authenticated:
+    st.title("🔐 Autenticación Requerida")
+    st.markdown("Por favor, ingresa tus credenciales para acceder al dashboard.")
+    
+    with st.form("login_form"):
+        input_username = st.text_input("Usuario", placeholder="Ingresa tu usuario")
+        input_password = st.text_input("Contraseña", type="password", placeholder="Ingresa tu contraseña")
+        submit_button = st.form_submit_button("Iniciar Sesión")
+        
+        if submit_button:
+            if check_password(input_username, input_password):
+                st.session_state.authenticated = True
+                st.rerun()
+            else:
+                st.error("❌ Usuario o contraseña incorrectos")
+    
+    st.stop()
+
+# Cargar configuración de Redis (solo después de autenticación)
 redis_config = config.get_redis_config()
 
-# Sidebar - Configuración (debe estar antes del título para definir auto_refresh)
+# Usar configuración del archivo sin mostrarla
+redis_host = redis_config['host']
+redis_port = redis_config['port']
+redis_db = redis_config['db']
+redis_password = redis_config['password']
+
+# Sidebar - Configuración
 st.sidebar.title("⚙️ Configuración")
-st.sidebar.markdown("### Redis")
-use_custom_redis = st.sidebar.checkbox("Usar configuración personalizada", value=False)
-
-if use_custom_redis:
-    redis_host = st.sidebar.text_input("Redis Host", value=redis_config['host'])
-    redis_port = st.sidebar.number_input("Redis Port", value=redis_config['port'], min_value=1, max_value=65535)
-    redis_db = st.sidebar.number_input("Redis DB", value=redis_config['db'], min_value=0, max_value=15)
-    redis_password = st.sidebar.text_input("Redis Password", value=redis_config['password'] or "", type="password")
-    if redis_password == "":
-        redis_password = None
-else:
-    redis_host = redis_config['host']
-    redis_port = redis_config['port']
-    redis_db = redis_config['db']
-    redis_password = redis_config['password']
-    st.sidebar.info(f"Usando configuración de config.yaml:\n{redis_host}:{redis_port} (DB: {redis_db})")
-
-st.sidebar.markdown("---")
 auto_refresh = st.sidebar.checkbox("Auto-refresh", value=True)
 refresh_interval = st.sidebar.slider("Intervalo (segundos)", 1, 60, 5)
+
+# Botón de cierre de sesión
+st.sidebar.markdown("---")
+if st.sidebar.button("🚪 Cerrar Sesión"):
+    st.session_state.authenticated = False
+    st.rerun()
 
 # Título principal con indicador de estado
 col_title1, col_title2 = st.columns([3, 1])
@@ -57,10 +84,10 @@ with col_title2:
         st.markdown(f"<div style='text-align: right; padding-top: 1rem;'><span style='color: gray;'>⚪ PAUSADO</span></div>", unsafe_allow_html=True)
 st.markdown("---")
 
-# Inicializar cliente Redis
+# Inicializar cliente de datos
 @st.cache_resource
 def get_redis_client(host, port, db, password):
-    """Obtiene el cliente Redis (con caché)"""
+    """Obtiene el cliente de datos (con caché)"""
     # Crear una clave única basada en los parámetros para invalidar el caché cuando cambien
     return DNSRedisClient(
         host=host,
@@ -72,7 +99,7 @@ def get_redis_client(host, port, db, password):
 try:
     redis_client = get_redis_client(redis_host, redis_port, redis_db, redis_password)
 except Exception as e:
-    st.error(f"Error conectando a Redis: {e}")
+    st.error(f"Error conectando al sistema: {e}")
     st.stop()
 
 # Botón de actualización manual y estado de auto-refresh
@@ -93,7 +120,7 @@ with st.sidebar.expander("🔍 Diagnóstico"):
     try:
         # Verificar conexión
         redis_client.client.ping()
-        st.success("✅ Conexión a Redis: OK")
+        st.success("✅ Conexión: OK")
         
         # Obtener información de diagnóstico
         diag_info = redis_client.get_diagnostic_info()
@@ -101,10 +128,10 @@ with st.sidebar.expander("🔍 Diagnóstico"):
         if 'error' in diag_info:
             st.error(f"❌ Error: {diag_info['error']}")
         else:
-            st.info(f"📊 Total de claves DNS: {diag_info['total_keys']}")
+            st.info(f"📊 Total de registros: {diag_info['total_keys']}")
             
             if diag_info['has_data']:
-                st.success("✅ Hay datos en Redis")
+                st.success("✅ Hay datos disponibles")
                 st.info(f"  - Clientes: {diag_info['client_keys']}")
                 st.info(f"  - Dominios: {diag_info['domain_keys']}")
                 st.info(f"  - Paquetes: {diag_info['packet_keys']}")
@@ -114,12 +141,11 @@ with st.sidebar.expander("🔍 Diagnóstico"):
                 st.info(f"  - Clientes únicos: {diag_info['unique_clients']}")
                 st.info(f"  - Dominios únicos: {diag_info['unique_domains']}")
             else:
-                st.warning("⚠️ No hay datos en Redis")
+                st.warning("⚠️ No hay datos disponibles")
                 st.markdown("""
                 **Posibles causas:**
                 - El capturador DNS no está ejecutándose
                 - No hay tráfico DNS en la red
-                - El capturador está usando otra base de datos Redis
                 """)
     except Exception as e:
         st.error(f"❌ Error en diagnóstico: {e}")
@@ -158,11 +184,10 @@ try:
     
     # Mostrar advertencia si no hay datos
     if total_queries == 0 and unique_clients == 0 and unique_domains == 0:
-        st.warning("⚠️ No se encontraron datos en Redis. Asegúrate de que:")
+        st.warning("⚠️ No se encontraron datos. Asegúrate de que:")
         st.markdown("""
-        1. El capturador DNS esté ejecutándose (`sudo python3 main.py`)
+        1. El capturador DNS esté ejecutándose
         2. Haya tráfico DNS en la red
-        3. El capturador esté conectado al mismo servidor Redis
         """)
     
 except Exception as e:
@@ -194,7 +219,7 @@ with col1:
                 color_discrete_map={'TCP': '#1f77b4', 'UDP': '#ff7f0e'}
             )
             fig.update_traces(textposition='inside', textinfo='percent+label')
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("No hay datos de protocolos disponibles")
     except Exception as e:
@@ -220,7 +245,7 @@ with col2:
                 color_continuous_scale='Blues'
             )
             fig.update_layout(xaxis_tickangle=-45)
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
         else:
             st.info("No hay datos de tipos de registro disponibles")
     except Exception as e:
@@ -249,11 +274,11 @@ with col1:
                 color_continuous_scale='Reds'
             )
             fig.update_layout(yaxis={'categoryorder': 'total ascending'})
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
             # Tabla detallada
             with st.expander("Ver tabla detallada"):
-                st.dataframe(df_clients, use_container_width=True)
+                st.dataframe(df_clients, width='stretch')
         else:
             st.info("No hay datos de clientes disponibles")
     except Exception as e:
@@ -277,11 +302,11 @@ with col2:
                 color_continuous_scale='Greens'
             )
             fig.update_layout(yaxis={'categoryorder': 'total ascending'})
-            st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, width='stretch')
             
             # Tabla detallada
             with st.expander("Ver tabla detallada"):
-                st.dataframe(df_domains, use_container_width=True)
+                st.dataframe(df_domains, width='stretch')
         else:
             st.info("No hay datos de dominios disponibles")
     except Exception as e:
@@ -309,7 +334,7 @@ try:
             })
         
         df_recent = pd.DataFrame(table_data)
-        st.dataframe(df_recent, use_container_width=True, height=400)
+        st.dataframe(df_recent, width='stretch', height=400)
     else:
         st.info("No hay consultas recientes disponibles")
 except Exception as e:
@@ -367,7 +392,7 @@ try:
             values='Cantidad',
             names='Tipo'
         )
-        st.plotly_chart(fig, use_container_width=True)
+        st.plotly_chart(fig, width='stretch')
     
 except Exception as e:
     st.error(f"Error: {e}")

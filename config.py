@@ -47,6 +47,14 @@ class Config:
                 'sniffer': {
                     'interface': None,
                     'filter': 'port 53'
+                },
+                'auth': {
+                    'users': [
+                        {
+                            'username': 'admin',
+                            'password': 'admin123'
+                        }
+                    ]
                 }
             }
             self._save_config(default_config)
@@ -96,6 +104,30 @@ class Config:
             'interface': sniffer_config.get('interface'),
             'filter': sniffer_config.get('filter', 'port 53')
         }
+    
+    def get_auth_config(self) -> Dict[str, str]:
+        """
+        Obtiene la configuración de autenticación
+        
+        Returns:
+            Diccionario con username como clave y password como valor
+        """
+        auth_config = self._config.get('auth', {})
+        users = auth_config.get('users', [])
+        
+        # Convertir lista de usuarios a diccionario
+        auth_dict = {}
+        for user in users:
+            if isinstance(user, dict) and 'username' in user and 'password' in user:
+                auth_dict[user['username']] = user['password']
+        
+        # Si no hay usuarios configurados, usar valores por defecto
+        if not auth_dict:
+            auth_dict = {
+                'admin': 'admin123'
+            }
+        
+        return auth_dict
     
     def update_redis_config(self, host: Optional[str] = None, port: Optional[int] = None,
                            db: Optional[int] = None, password: Optional[str] = None):
