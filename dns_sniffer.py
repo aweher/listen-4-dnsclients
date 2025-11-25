@@ -176,13 +176,13 @@ class DNSSniffer:
             self.stats['errors'] += 1
             return None
     
-    def packet_handler(self, packet, redis_client=None):
+    def packet_handler(self, packet, db_client=None):
         """
         Maneja cada paquete capturado
         
         Args:
             packet: Paquete capturado
-            redis_client: Cliente Redis para almacenar datos
+            db_client: Cliente SQLite para almacenar datos
         """
         self.stats['total_packets'] += 1
         
@@ -195,71 +195,21 @@ class DNSSniffer:
             else:
                 self.stats['udp_count'] += 1
             
-            # Almacenar en Redis si está disponible
-            if redis_client:
+            # Almacenar en SQLite si está disponible
+            if db_client:
                 try:
-                    self._store_in_redis(redis_client, dns_data)
+                    db_client.store_packet(dns_data)
                 except Exception as e:
-                    logger.error(f"Error almacenando en Redis: {e}")
+                    logger.error(f"Error almacenando en SQLite: {e}")
             
             logger.debug(f"DNS Packet: {dns_data['src_ip']} -> {dns_data['domain']} ({dns_data['record_type']}) via {dns_data['protocol']}")
     
-    def _store_in_redis(self, redis_client, dns_data: Dict[str, Any]):
-        """
-        Almacena datos DNS en Redis
-        
-        Args:
-            redis_client: Cliente Redis
-            dns_data: Datos del paquete DNS
-        """
-        import json
-        from datetime import datetime
-        
-        timestamp = datetime.now()
-        timestamp_str = timestamp.strftime('%Y%m%d%H%M%S%f')
-        
-        # Almacenar el paquete completo
-        key = f"dns:packet:{timestamp_str}"
-        redis_client.setex(key, 86400 * 7, json.dumps(dns_data))  # Retener 7 días
-        
-        # Estadísticas por IP de origen
-        src_ip_key = f"dns:client:{dns_data['src_ip']}"
-        redis_client.incr(f"{src_ip_key}:count")
-        redis_client.expire(f"{src_ip_key}:count", 86400 * 30)  # 30 días
-        
-        # Dominios más consultados
-        domain_key = f"dns:domain:{dns_data['domain']}"
-        redis_client.incr(f"{domain_key}:count")
-        redis_client.expire(f"{domain_key}:count", 86400 * 30)
-        
-        # Estadísticas por tipo de registro
-        record_type_key = f"dns:type:{dns_data['record_type']}"
-        redis_client.incr(f"{record_type_key}:count")
-        redis_client.expire(f"{record_type_key}:count", 86400 * 30)
-        
-        # Estadísticas TCP vs UDP
-        protocol_key = f"dns:protocol:{dns_data['protocol']}"
-        redis_client.incr(f"{protocol_key}:count")
-        redis_client.expire(f"{protocol_key}:count", 86400 * 30)
-        
-        # Timestamp para consultas recientes
-        redis_client.zadd("dns:recent", {key: timestamp.timestamp()})
-        redis_client.expire("dns:recent", 86400 * 7)  # Mantener últimos 7 días
-        
-        # IPs de origen únicas
-        redis_client.sadd("dns:clients:unique", dns_data['src_ip'])
-        redis_client.expire("dns:clients:unique", 86400 * 30)
-        
-        # Dominios únicos
-        redis_client.sadd("dns:domains:unique", dns_data['domain'])
-        redis_client.expire("dns:domains:unique", 86400 * 30)
-    
-    def start(self, redis_client=None, filter_str: str = "port 53"):
+    def start(self, db_client=None, filter_str: str = "port 53"):
         """
         Inicia la captura de paquetes DNS
         
         Args:
-            redis_client: Cliente Redis para almacenar datos
+            db_client: Cliente SQLite para almacenar datos
             filter_str: Filtro BPF para captura (default: port 53)
         """
         logger.info(f"Iniciando captura DNS en interfaz: {self.interface or 'todas'}")
@@ -269,7 +219,7 @@ class DNSSniffer:
             sniff(
                 iface=self.interface,
                 filter=filter_str,
-                prn=lambda p: self.packet_handler(p, redis_client),
+                prn=lambda p: self.packet_handler(p, db_client),
                 store=False  # No almacenar paquetes en memoria
             )
         except KeyboardInterrupt:

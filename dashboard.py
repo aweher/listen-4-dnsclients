@@ -9,7 +9,7 @@ import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import time
-from redis_client import DNSRedisClient
+from sqlite_client import DNSSQLiteClient
 
 # Configuración de la página
 st.set_page_config(
@@ -23,15 +23,12 @@ st.set_page_config(
 st.title("🌐 DNS Monitor Dashboard")
 st.markdown("---")
 
-# Inicializar cliente Redis
+# Inicializar cliente SQLite
 @st.cache_resource
-def get_redis_client():
-    """Obtiene el cliente Redis (con caché)"""
-    return DNSRedisClient(
-        host=st.sidebar.text_input("Redis Host", value="localhost"),
-        port=st.sidebar.number_input("Redis Port", value=6379, min_value=1, max_value=65535),
-        db=st.sidebar.number_input("Redis DB", value=0, min_value=0, max_value=15)
-    )
+def get_db_client():
+    """Obtiene el cliente SQLite (con caché)"""
+    db_path = st.sidebar.text_input("Ruta Base de Datos", value="dns_monitor.db")
+    return DNSSQLiteClient(db_path=db_path)
 
 # Sidebar
 st.sidebar.title("⚙️ Configuración")
@@ -39,9 +36,9 @@ auto_refresh = st.sidebar.checkbox("Auto-refresh", value=True)
 refresh_interval = st.sidebar.slider("Intervalo (segundos)", 1, 60, 5)
 
 try:
-    redis_client = get_redis_client()
+    db_client = get_db_client()
 except Exception as e:
-    st.error(f"Error conectando a Redis: {e}")
+    st.error(f"Error conectando a SQLite: {e}")
     st.stop()
 
 # Botón de actualización manual
@@ -54,9 +51,9 @@ st.header("📊 Estadísticas Generales")
 col1, col2, col3, col4 = st.columns(4)
 
 try:
-    unique_clients = redis_client.get_unique_clients_count()
-    unique_domains = redis_client.get_unique_domains_count()
-    protocol_stats = redis_client.get_protocol_stats()
+    unique_clients = db_client.get_unique_clients_count()
+    unique_domains = db_client.get_unique_domains_count()
+    protocol_stats = db_client.get_protocol_stats()
     total_queries = sum(protocol_stats.values())
     
     with col1:
@@ -89,7 +86,7 @@ col1, col2 = st.columns(2)
 with col1:
     st.subheader("📡 Protocolo: TCP vs UDP")
     try:
-        protocol_stats = redis_client.get_protocol_stats()
+        protocol_stats = db_client.get_protocol_stats()
         if protocol_stats:
             df_protocol = pd.DataFrame([
                 {'Protocolo': 'TCP', 'Cantidad': protocol_stats.get('TCP', 0)},
@@ -113,7 +110,7 @@ with col1:
 with col2:
     st.subheader("📋 Tipos de Registro DNS")
     try:
-        record_stats = redis_client.get_record_type_stats()
+        record_stats = db_client.get_record_type_stats()
         if record_stats:
             df_records = pd.DataFrame([
                 {'Tipo': k, 'Cantidad': v}
@@ -144,7 +141,7 @@ col1, col2 = st.columns(2)
 with col1:
     st.subheader("👥 Top Clientes (IPs de Origen)")
     try:
-        top_clients = redis_client.get_top_clients(limit=10)
+        top_clients = db_client.get_top_clients(limit=10)
         if top_clients:
             df_clients = pd.DataFrame(top_clients)
             
@@ -172,7 +169,7 @@ with col1:
 with col2:
     st.subheader("🌍 Dominios Más Consultados")
     try:
-        top_domains = redis_client.get_top_domains(limit=10)
+        top_domains = db_client.get_top_domains(limit=10)
         if top_domains:
             df_domains = pd.DataFrame(top_domains)
             
@@ -202,7 +199,7 @@ st.markdown("---")
 st.subheader("🕐 Consultas Recientes")
 try:
     num_recent = st.slider("Número de consultas recientes a mostrar", 10, 100, 50)
-    recent_queries = redis_client.get_recent_queries(limit=num_recent)
+    recent_queries = db_client.get_recent_queries(limit=num_recent)
     
     if recent_queries:
         # Preparar datos para la tabla
@@ -241,7 +238,7 @@ try:
         "Últimas 48 horas": 48
     }
     hours = hours_map[time_range]
-    time_stats = redis_client.get_time_range_stats(hours=hours)
+    time_stats = db_client.get_time_range_stats(hours=hours)
     
     col1, col2, col3, col4 = st.columns(4)
     

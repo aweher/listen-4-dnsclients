@@ -8,7 +8,7 @@ import sys
 import signal
 import logging
 from dns_sniffer import DNSSniffer
-from redis_client import DNSRedisClient
+from sqlite_client import DNSSQLiteClient
 
 logging.basicConfig(
     level=logging.INFO,
@@ -41,33 +41,15 @@ def main():
         help='Filtro BPF para captura (default: port 53)'
     )
     parser.add_argument(
-        '--redis-host',
+        '--db-path',
         type=str,
-        default='localhost',
-        help='Host de Redis (default: localhost)'
+        default='dns_monitor.db',
+        help='Ruta al archivo de base de datos SQLite (default: dns_monitor.db)'
     )
     parser.add_argument(
-        '--redis-port',
-        type=int,
-        default=6379,
-        help='Puerto de Redis (default: 6379)'
-    )
-    parser.add_argument(
-        '--redis-db',
-        type=int,
-        default=0,
-        help='Base de datos Redis (default: 0)'
-    )
-    parser.add_argument(
-        '--redis-password',
-        type=str,
-        default=None,
-        help='Contraseña de Redis (opcional)'
-    )
-    parser.add_argument(
-        '--no-redis',
+        '--no-db',
         action='store_true',
-        help='Ejecutar sin Redis (solo mostrar en consola)'
+        help='Ejecutar sin base de datos (solo mostrar en consola)'
     )
     
     args = parser.parse_args()
@@ -76,21 +58,16 @@ def main():
     signal.signal(signal.SIGINT, signal_handler)
     signal.signal(signal.SIGTERM, signal_handler)
     
-    # Inicializar cliente Redis si es necesario
-    redis_client = None
-    if not args.no_redis:
+    # Inicializar cliente SQLite si es necesario
+    db_client = None
+    if not args.no_db:
         try:
-            redis_client = DNSRedisClient(
-                host=args.redis_host,
-                port=args.redis_port,
-                db=args.redis_db,
-                password=args.redis_password
-            )
-            logger.info("Redis conectado exitosamente")
+            db_client = DNSSQLiteClient(db_path=args.db_path)
+            logger.info(f"SQLite conectado exitosamente: {args.db_path}")
         except Exception as e:
-            logger.error(f"Error conectando a Redis: {e}")
-            logger.error("Ejecutando sin almacenamiento en Redis...")
-            redis_client = None
+            logger.error(f"Error conectando a SQLite: {e}")
+            logger.error("Ejecutando sin almacenamiento en base de datos...")
+            db_client = None
     
     # Inicializar y iniciar capturador DNS
     sniffer = DNSSniffer(interface=args.interface)
@@ -98,13 +75,17 @@ def main():
     try:
         logger.info("Iniciando captura DNS...")
         logger.info("Presiona Ctrl+C para detener")
-        sniffer.start(redis_client=redis_client, filter_str=args.filter)
+        sniffer.start(db_client=db_client, filter_str=args.filter)
     except KeyboardInterrupt:
         logger.info("Captura interrumpida")
     except Exception as e:
         logger.error(f"Error durante la captura: {e}")
         sys.exit(1)
     finally:
+        # Cerrar conexión a la base de datos
+        if db_client:
+            db_client.close()
+        
         # Mostrar estadísticas finales
         stats = sniffer.get_stats()
         logger.info("\n=== Estadísticas Finales ===")

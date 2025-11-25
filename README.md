@@ -2,12 +2,12 @@
 
 > Hecho por Ariel S. Weher <ariel@ayuda.la>
 
-Sistema de monitoreo pasivo de consultas DNS que captura tráfico DNS en tiempo real, almacena estadísticas en Redis y proporciona un dashboard interactivo para visualización.
+Sistema de monitoreo pasivo de consultas DNS que captura tráfico DNS en tiempo real, almacena estadísticas en una base de datos SQLite local y proporciona un dashboard interactivo para visualización.
 
 ## Características
 
 - 🔍 **Captura pasiva** de paquetes DNS (TCP y UDP)
-- 📊 **Almacenamiento en Redis** con estadísticas agregadas
+- 📊 **Almacenamiento en SQLite** con estadísticas agregadas
 - 📈 **Dashboard interactivo** con visualizaciones en tiempo real
 - 🌐 **Estadísticas detalladas**:
   - IPs de origen de clientes
@@ -20,8 +20,8 @@ Sistema de monitoreo pasivo de consultas DNS que captura tráfico DNS en tiempo 
 ## Requisitos
 
 - Python 3.8 o superior
-- Redis (instalado y ejecutándose)
 - Permisos de administrador para capturar paquetes de red (en Linux/Mac)
+- SQLite3 (incluido en Python por defecto)
 
 ## Instalación
 
@@ -32,49 +32,9 @@ Sistema de monitoreo pasivo de consultas DNS que captura tráfico DNS en tiempo 
 pip install -r requirements.txt
 ```
 
-3. Asegurarse de que Redis esté ejecutándose:
-
-**Opción A: Usando Docker Compose (recomendado)**
-```bash
-docker-compose up -d
-```
-
-**Opción B: Instalación local**
-```bash
-# En macOS con Homebrew
-brew services start redis
-
-# En Linux
-sudo systemctl start redis
-
-# O ejecutar manualmente
-redis-server
-```
+No se requiere configuración adicional de base de datos. SQLite creará automáticamente el archivo `dns_monitor.db` cuando se ejecute el capturador por primera vez.
 
 ## Uso
-
-### 0. Iniciar Redis con Docker Compose
-
-Si prefieres usar Docker para Redis (recomendado para facilitar el despliegue):
-
-```bash
-# Iniciar Redis en segundo plano
-docker-compose up -d
-
-# Verificar que Redis está corriendo
-docker-compose ps
-
-# Ver logs de Redis
-docker-compose logs -f redis
-
-# Detener Redis
-docker-compose down
-
-# Detener y eliminar volúmenes (¡elimina todos los datos!)
-docker-compose down -v
-```
-
-El contenedor de Redis estará disponible en `localhost:6379` y los datos se persisten en un volumen Docker.
 
 ### 1. Iniciar el capturador DNS
 
@@ -85,7 +45,7 @@ El capturador debe ejecutarse con permisos de administrador para poder capturar 
 sudo python3 main.py
 
 # Con opciones personalizadas
-sudo python3 main.py -i eth0 --redis-host localhost --redis-port 6379
+sudo python3 main.py -i eth0 --db-path /ruta/personalizada/dns_monitor.db
 
 # Ver todas las opciones
 python3 main.py --help
@@ -94,11 +54,8 @@ python3 main.py --help
 **Opciones disponibles:**
 - `-i, --interface`: Interfaz de red específica (por defecto: todas)
 - `-f, --filter`: Filtro BPF personalizado (por defecto: `port 53`)
-- `--redis-host`: Host de Redis (por defecto: `localhost`)
-- `--redis-port`: Puerto de Redis (por defecto: `6379`)
-- `--redis-db`: Base de datos Redis (por defecto: `0`)
-- `--redis-password`: Contraseña de Redis (opcional)
-- `--no-redis`: Ejecutar sin Redis (solo mostrar en consola)
+- `--db-path`: Ruta al archivo de base de datos SQLite (por defecto: `dns_monitor.db`)
+- `--no-db`: Ejecutar sin base de datos (solo mostrar en consola)
 
 ### 2. Iniciar el Dashboard
 
@@ -110,16 +67,18 @@ streamlit run dashboard.py
 
 El dashboard estará disponible en `http://localhost:8501`
 
+En el sidebar del dashboard puedes configurar la ruta a la base de datos si usaste una diferente a la predeterminada.
+
 ## Estructura del Proyecto
 
 ```
 detectar-clientes-dns/
 ├── main.py              # Programa principal del capturador
 ├── dns_sniffer.py       # Módulo de captura de paquetes DNS
-├── redis_client.py      # Cliente Redis para almacenamiento y consultas
+├── sqlite_client.py     # Cliente SQLite para almacenamiento y consultas
 ├── dashboard.py         # Dashboard Streamlit
 ├── requirements.txt     # Dependencias Python
-├── docker-compose.yml   # Configuración Docker para Redis
+├── dns_monitor.db       # Base de datos SQLite (se crea automáticamente)
 └── README.md           # Este archivo
 ```
 
@@ -172,6 +131,13 @@ sudo python3 main.py -f "tcp port 53"
 sudo python3 main.py -f "port 53 and host 192.168.1.100"
 ```
 
+### Base de Datos SQLite
+- La base de datos se crea automáticamente en la primera ejecución
+- Por defecto se crea como `dns_monitor.db` en el directorio actual
+- Puedes especificar una ruta personalizada con `--db-path`
+- Los datos se almacenan de forma persistente en el archivo
+- Puedes hacer backup simplemente copiando el archivo `.db`
+
 ## Solución de Problemas
 
 ### Error: "Permission denied" al capturar paquetes
@@ -181,28 +147,48 @@ sudo python3 main.py -f "port 53 and host 192.168.1.100"
 ### Error: "No module named 'scapy'"
 - Instala las dependencias: `pip install -r requirements.txt`
 
-### Error: "Connection refused" a Redis
-- Verifica que Redis esté ejecutándose: `redis-cli ping`
-- Debe responder con `PONG`
-- Si usas Docker Compose, verifica que el contenedor esté corriendo: `docker-compose ps`
-- Para ver los logs de Redis: `docker-compose logs redis`
+### Error: "No such file or directory" al acceder a la base de datos
+- Verifica que la ruta especificada con `--db-path` sea correcta
+- Asegúrate de que el directorio existe y tienes permisos de escritura
 
 ### No se capturan paquetes
 - Verifica que haya tráfico DNS en la interfaz seleccionada
 - Prueba con `tcpdump -i <interface> port 53` para verificar que hay tráfico
 - Asegúrate de que el filtro BPF sea correcto
 
+### El dashboard no muestra datos
+- Verifica que el capturador esté ejecutándose y capturando datos
+- Asegúrate de que la ruta de la base de datos en el dashboard coincida con la del capturador
+- Verifica que el archivo `dns_monitor.db` existe y tiene datos
+
 ## Desarrollo
 
-### Estructura de Datos en Redis
+### Estructura de la Base de Datos SQLite
 
-El sistema almacena datos en Redis con las siguientes claves:
+El sistema utiliza una tabla principal `dns_packets` con los siguientes campos:
 
-- `dns:packet:<timestamp>`: Paquetes DNS individuales (JSON)
-- `dns:client:<ip>:count`: Contador de consultas por IP
-- `dns:domain:<domain>:count`: Contador de consultas por dominio
-- `dns:type:<type>:count`: Contador por tipo de registro
-- `dns:protocol:<protocol>:count`: Contador por protocolo
-- `dns:recent`: Sorted set con timestamps de consultas recientes
-- `dns:clients:unique`: Set de IPs únicas
-- `dns:domains:unique`: Set de dominios únicos
+- `id`: ID único del registro
+- `timestamp`: Timestamp de la consulta
+- `src_ip`: IP de origen
+- `dst_ip`: IP de destino
+- `protocol`: Protocolo (TCP/UDP)
+- `is_query`: Si es una query (1) o respuesta (0)
+- `is_response`: Si es una respuesta (1) o query (0)
+- `domain`: Dominio consultado
+- `record_type`: Tipo de registro DNS (A, AAAA, MX, etc.)
+- `record_type_code`: Código numérico del tipo de registro
+- `dns_id`: ID de la consulta DNS
+- `opcode`: Opcode DNS
+- `rcode`: Código de respuesta (si es respuesta)
+- `data_json`: Datos completos del paquete en formato JSON
+- `created_at`: Timestamp de creación del registro
+
+La base de datos incluye índices en los campos más consultados para optimizar el rendimiento.
+
+### Limpieza de Datos Antiguos
+
+El cliente SQLite incluye un método `cleanup_old_data(days)` que puedes usar para eliminar datos más antiguos que un número de días especificado. Esto ayuda a mantener el tamaño de la base de datos bajo control.
+
+## Licencia
+
+Este proyecto es de código abierto y está disponible para uso libre.
