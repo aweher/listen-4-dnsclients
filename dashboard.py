@@ -19,27 +19,11 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
-# Título principal
-st.title("🌐 DNS Monitor Dashboard")
-st.markdown("---")
-
 # Cargar configuración
 config = get_config()
 redis_config = config.get_redis_config()
 
-# Inicializar cliente Redis
-@st.cache_resource
-def get_redis_client(host, port, db, password):
-    """Obtiene el cliente Redis (con caché)"""
-    # Crear una clave única basada en los parámetros para invalidar el caché cuando cambien
-    return DNSRedisClient(
-        host=host,
-        port=port,
-        db=db,
-        password=password
-    )
-
-# Sidebar
+# Sidebar - Configuración (debe estar antes del título para definir auto_refresh)
 st.sidebar.title("⚙️ Configuración")
 st.sidebar.markdown("### Redis")
 use_custom_redis = st.sidebar.checkbox("Usar configuración personalizada", value=False)
@@ -62,16 +46,47 @@ st.sidebar.markdown("---")
 auto_refresh = st.sidebar.checkbox("Auto-refresh", value=True)
 refresh_interval = st.sidebar.slider("Intervalo (segundos)", 1, 60, 5)
 
+# Título principal con indicador de estado
+col_title1, col_title2 = st.columns([3, 1])
+with col_title1:
+    st.title("🌐 DNS Monitor Dashboard")
+with col_title2:
+    if auto_refresh:
+        st.markdown(f"<div style='text-align: right; padding-top: 1rem;'><span style='color: green; font-weight: bold;'>🟢 EN VIVO</span><br><small>{refresh_interval}s</small></div>", unsafe_allow_html=True)
+    else:
+        st.markdown(f"<div style='text-align: right; padding-top: 1rem;'><span style='color: gray;'>⚪ PAUSADO</span></div>", unsafe_allow_html=True)
+st.markdown("---")
+
+# Inicializar cliente Redis
+@st.cache_resource
+def get_redis_client(host, port, db, password):
+    """Obtiene el cliente Redis (con caché)"""
+    # Crear una clave única basada en los parámetros para invalidar el caché cuando cambien
+    return DNSRedisClient(
+        host=host,
+        port=port,
+        db=db,
+        password=password
+    )
+
 try:
     redis_client = get_redis_client(redis_host, redis_port, redis_db, redis_password)
 except Exception as e:
     st.error(f"Error conectando a Redis: {e}")
     st.stop()
 
-# Botón de actualización manual
-if st.sidebar.button("🔄 Actualizar Datos"):
-    st.cache_resource.clear()  # Limpiar caché al actualizar
-    st.rerun()
+# Botón de actualización manual y estado de auto-refresh
+col_btn1, col_btn2 = st.sidebar.columns(2)
+with col_btn1:
+    if st.button("🔄 Actualizar"):
+        st.cache_resource.clear()  # Limpiar caché al actualizar
+        st.rerun()
+
+with col_btn2:
+    if auto_refresh:
+        st.success(f"🟢 Auto-refresh: {refresh_interval}s")
+    else:
+        st.info("⚪ Auto-refresh: OFF")
 
 # Sección de diagnóstico
 with st.sidebar.expander("🔍 Diagnóstico"):
@@ -357,12 +372,18 @@ try:
 except Exception as e:
     st.error(f"Error: {e}")
 
-# Footer
+# Footer con indicador de actualización
 st.markdown("---")
-st.markdown(f"*Última actualización: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*")
-
-# Auto-refresh
+current_time = datetime.now()
 if auto_refresh:
-    time.sleep(refresh_interval)
+    st.markdown(f"*🔄 Actualización automática cada {refresh_interval}s - Última actualización: {current_time.strftime('%Y-%m-%d %H:%M:%S')}*")
+else:
+    st.markdown(f"*Última actualización: {current_time.strftime('%Y-%m-%d %H:%M:%S')}*")
+
+# Auto-refresh - debe estar al final del script
+if auto_refresh:
+    # Mostrar un spinner mientras espera
+    with st.spinner(f"Esperando {refresh_interval} segundos para próxima actualización..."):
+        time.sleep(refresh_interval)
     st.rerun()
 

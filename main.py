@@ -76,6 +76,18 @@ def main():
         default=None,
         help='Ruta al archivo de configuración (default: config.yaml)'
     )
+    parser.add_argument(
+        '--batch-size',
+        type=int,
+        default=50,
+        help='Número de paquetes a acumular antes de escribir a Redis (default: 50)'
+    )
+    parser.add_argument(
+        '--flush-interval',
+        type=float,
+        default=1.0,
+        help='Intervalo en segundos para forzar escritura a Redis (default: 1.0)'
+    )
     
     args = parser.parse_args()
     
@@ -115,11 +127,17 @@ def main():
             redis_client = None
     
     # Inicializar y iniciar capturador DNS
-    sniffer = DNSSniffer(interface=interface)
+    sniffer = DNSSniffer(
+        interface=interface,
+        batch_size=args.batch_size,
+        flush_interval=args.flush_interval
+    )
     
     try:
         logger.info("Iniciando captura DNS...")
         logger.info("Presiona Ctrl+C para detener")
+        if redis_client:
+            logger.info(f"Optimización activada: batch_size={args.batch_size}, flush_interval={args.flush_interval}s")
         sniffer.start(redis_client=redis_client, filter_str=filter_str)
     except KeyboardInterrupt:
         logger.info("Captura interrumpida")
@@ -135,6 +153,9 @@ def main():
         logger.info(f"TCP: {stats['tcp_count']}")
         logger.info(f"UDP: {stats['udp_count']}")
         logger.info(f"Errores: {stats['errors']}")
+        if 'batches_written' in stats:
+            logger.info(f"Batches escritos a Redis: {stats['batches_written']}")
+            logger.info(f"Paquetes en buffer: {stats.get('packets_buffered', 0)}")
 
 
 if __name__ == '__main__':
