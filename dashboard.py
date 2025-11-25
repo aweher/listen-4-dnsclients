@@ -10,6 +10,7 @@ import plotly.graph_objects as go
 from datetime import datetime, timedelta
 import time
 from redis_client import DNSRedisClient
+from config import get_config
 
 # Configuración de la página
 st.set_page_config(
@@ -23,23 +24,46 @@ st.set_page_config(
 st.title("🌐 DNS Monitor Dashboard")
 st.markdown("---")
 
+# Cargar configuración
+config = get_config()
+redis_config = config.get_redis_config()
+
 # Inicializar cliente Redis
 @st.cache_resource
-def get_redis_client():
+def get_redis_client(host, port, db, password):
     """Obtiene el cliente Redis (con caché)"""
     return DNSRedisClient(
-        host=st.sidebar.text_input("Redis Host", value="localhost"),
-        port=st.sidebar.number_input("Redis Port", value=6379, min_value=1, max_value=65535),
-        db=st.sidebar.number_input("Redis DB", value=0, min_value=0, max_value=15)
+        host=host,
+        port=port,
+        db=db,
+        password=password
     )
 
 # Sidebar
 st.sidebar.title("⚙️ Configuración")
+st.sidebar.markdown("### Redis")
+use_custom_redis = st.sidebar.checkbox("Usar configuración personalizada", value=False)
+
+if use_custom_redis:
+    redis_host = st.sidebar.text_input("Redis Host", value=redis_config['host'])
+    redis_port = st.sidebar.number_input("Redis Port", value=redis_config['port'], min_value=1, max_value=65535)
+    redis_db = st.sidebar.number_input("Redis DB", value=redis_config['db'], min_value=0, max_value=15)
+    redis_password = st.sidebar.text_input("Redis Password", value=redis_config['password'] or "", type="password")
+    if redis_password == "":
+        redis_password = None
+else:
+    redis_host = redis_config['host']
+    redis_port = redis_config['port']
+    redis_db = redis_config['db']
+    redis_password = redis_config['password']
+    st.sidebar.info(f"Usando configuración de config.yaml:\n{redis_host}:{redis_port} (DB: {redis_db})")
+
+st.sidebar.markdown("---")
 auto_refresh = st.sidebar.checkbox("Auto-refresh", value=True)
 refresh_interval = st.sidebar.slider("Intervalo (segundos)", 1, 60, 5)
 
 try:
-    redis_client = get_redis_client()
+    redis_client = get_redis_client(redis_host, redis_port, redis_db, redis_password)
 except Exception as e:
     st.error(f"Error conectando a Redis: {e}")
     st.stop()

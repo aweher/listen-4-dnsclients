@@ -9,6 +9,7 @@ import signal
 import logging
 from dns_sniffer import DNSSniffer
 from redis_client import DNSRedisClient
+from config import get_config
 
 logging.basicConfig(
     level=logging.INFO,
@@ -37,26 +38,26 @@ def main():
     parser.add_argument(
         '-f', '--filter',
         type=str,
-        default='port 53',
-        help='Filtro BPF para captura (default: port 53)'
+        default=None,
+        help='Filtro BPF para captura (default: desde config.yaml)'
     )
     parser.add_argument(
         '--redis-host',
         type=str,
-        default='localhost',
-        help='Host de Redis (default: localhost)'
+        default=None,
+        help='Host de Redis (default: desde config.yaml)'
     )
     parser.add_argument(
         '--redis-port',
         type=int,
-        default=6379,
-        help='Puerto de Redis (default: 6379)'
+        default=None,
+        help='Puerto de Redis (default: desde config.yaml)'
     )
     parser.add_argument(
         '--redis-db',
         type=int,
-        default=0,
-        help='Base de datos Redis (default: 0)'
+        default=None,
+        help='Base de datos Redis (default: desde config.yaml)'
     )
     parser.add_argument(
         '--redis-password',
@@ -69,8 +70,29 @@ def main():
         action='store_true',
         help='Ejecutar sin Redis (solo mostrar en consola)'
     )
+    parser.add_argument(
+        '--config',
+        type=str,
+        default=None,
+        help='Ruta al archivo de configuración (default: config.yaml)'
+    )
     
     args = parser.parse_args()
+    
+    # Cargar configuración desde archivo
+    config = get_config(args.config)
+    redis_config = config.get_redis_config()
+    sniffer_config = config.get_sniffer_config()
+    
+    # Los argumentos de línea de comandos tienen prioridad sobre la configuración del archivo
+    # Si se proporcionan argumentos explícitos, usarlos; sino usar la configuración del archivo
+    redis_host = args.redis_host if args.redis_host is not None else redis_config['host']
+    redis_port = args.redis_port if args.redis_port is not None else redis_config['port']
+    redis_db = args.redis_db if args.redis_db is not None else redis_config['db']
+    redis_password = args.redis_password if args.redis_password is not None else redis_config['password']
+    
+    interface = args.interface if args.interface is not None else sniffer_config['interface']
+    filter_str = args.filter if args.filter is not None else sniffer_config['filter']
     
     # Registrar manejador de señales
     signal.signal(signal.SIGINT, signal_handler)
@@ -81,24 +103,24 @@ def main():
     if not args.no_redis:
         try:
             redis_client = DNSRedisClient(
-                host=args.redis_host,
-                port=args.redis_port,
-                db=args.redis_db,
-                password=args.redis_password
+                host=redis_host,
+                port=redis_port,
+                db=redis_db,
+                password=redis_password
             )
-            logger.info("Redis conectado exitosamente")
+            logger.info(f"Redis conectado exitosamente a {redis_host}:{redis_port} (DB: {redis_db})")
         except Exception as e:
             logger.error(f"Error conectando a Redis: {e}")
             logger.error("Ejecutando sin almacenamiento en Redis...")
             redis_client = None
     
     # Inicializar y iniciar capturador DNS
-    sniffer = DNSSniffer(interface=args.interface)
+    sniffer = DNSSniffer(interface=interface)
     
     try:
         logger.info("Iniciando captura DNS...")
         logger.info("Presiona Ctrl+C para detener")
-        sniffer.start(redis_client=redis_client, filter_str=args.filter)
+        sniffer.start(redis_client=redis_client, filter_str=filter_str)
     except KeyboardInterrupt:
         logger.info("Captura interrumpida")
     except Exception as e:

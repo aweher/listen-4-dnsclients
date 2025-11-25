@@ -1,0 +1,12 @@
+# Configuración del servidor Redis
+redis:
+  host: localhost
+  port: 6379
+  db: 0
+  password: null  # Configurar contraseña si es necesario (ejemplo: "mi_password")
+
+# Configuración del sniffer DNS
+sniffer:
+  interface: null  # null = todas las interfaces
+  filter: "port 53"  # Filtro BPF para captura
+
