@@ -362,7 +362,7 @@ class DNSSniffer:
             
             self.stats['batches_written'] += 1
             self.last_flush = time.time()
-            logger.debug(f"Escritos {len(packets_to_write)} paquetes a Redis en batch")
+            logger.info(f"✅ Escritos {len(packets_to_write)} paquetes a Redis en batch (Total batches: {self.stats['batches_written']})")
             
         except Exception as e:
             logger.error(f"Error escribiendo batch a Redis: {e}")
@@ -382,7 +382,9 @@ class DNSSniffer:
             # Flush si ha pasado el intervalo y hay datos
             if (current_time - self.last_flush) >= self.flush_interval:
                 with self.buffer_lock:
-                    if len(self.buffer) > 0:
+                    buffer_size = len(self.buffer)
+                    if buffer_size > 0:
+                        logger.debug(f"Flush periódico: {buffer_size} paquetes en buffer")
                         self._flush_buffer()
     
     def _stats_thread_worker(self, interval: float = 10.0):
