@@ -23,20 +23,20 @@ st.set_page_config(
 st.title("🌐 DNS Monitor Dashboard")
 st.markdown("---")
 
-# Inicializar cliente SQLite
-@st.cache_resource
-def get_db_client():
-    """Obtiene el cliente SQLite (con caché)"""
-    db_path = st.sidebar.text_input("Ruta Base de Datos", value="dns_monitor.db")
-    return DNSSQLiteClient(db_path=db_path)
-
-# Sidebar
+# Sidebar - Configuración
 st.sidebar.title("⚙️ Configuración")
+db_path = st.sidebar.text_input("Ruta Base de Datos", value="dns_monitor.db")
 auto_refresh = st.sidebar.checkbox("Auto-refresh", value=True)
 refresh_interval = st.sidebar.slider("Intervalo (segundos)", 1, 60, 5)
 
+# Inicializar cliente SQLite
+@st.cache_resource
+def get_db_client(db_path_param: str):
+    """Obtiene el cliente SQLite (con caché)"""
+    return DNSSQLiteClient(db_path=db_path_param)
+
 try:
-    db_client = get_db_client()
+    db_client = get_db_client(db_path)
 except Exception as e:
     st.error(f"Error conectando a SQLite: {e}")
     st.stop()
