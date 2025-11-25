@@ -39,7 +39,7 @@ class DNSSniffer:
         255: 'ANY'
     }
     
-    def __init__(self, interface: Optional[str] = None, batch_size: int = 50, flush_interval: float = 1.0):
+    def __init__(self, interface: Optional[str] = None, batch_size: int = 50, flush_interval: float = 1.0, verbose: bool = False):
         """
         Inicializa el capturador DNS
         
@@ -47,10 +47,12 @@ class DNSSniffer:
             interface: Interfaz de red a escuchar (None = todas las interfaces)
             batch_size: Número de paquetes a acumular antes de escribir a Redis (default: 50)
             flush_interval: Intervalo en segundos para forzar escritura a Redis (default: 1.0)
+            verbose: Si es True, muestra cada paquete capturado en consola
         """
         self.interface = interface
         self.batch_size = batch_size
         self.flush_interval = flush_interval
+        self.verbose = verbose
         self.stats = {
             'total_packets': 0,
             'dns_packets': 0,
@@ -66,6 +68,7 @@ class DNSSniffer:
         self.last_flush = time.time()
         self.redis_client = None
         self.flush_thread = None
+        self.stats_thread = None
         self.running = False
     
     def _parse_dns_packet(self, packet) -> Optional[Dict[str, Any]]:
@@ -211,6 +214,10 @@ class DNSSniffer:
                 self.stats['tcp_count'] += 1
             else:
                 self.stats['udp_count'] += 1
+            
+            # Mostrar paquete en consola si verbose está activado
+            if self.verbose:
+                logger.info(f"DNS: {dns_data['src_ip']} -> {dns_data['domain']} ({dns_data['record_type']}) via {dns_data['protocol']}")
             
             # Almacenar en buffer si Redis está disponible
             if self.redis_client:
@@ -378,6 +385,40 @@ class DNSSniffer:
                     if len(self.buffer) > 0:
                         self._flush_buffer()
     
+    def _stats_thread_worker(self, interval: float = 10.0):
+        """
+        Worker thread que muestra estadísticas periódicas
+        
+        Args:
+            interval: Intervalo en segundos para mostrar estadísticas (default: 10.0)
+        """
+        last_stats_time = time.time()
+        last_packets = 0
+        
+        while self.running:
+            time.sleep(interval)
+            current_time = time.time()
+            
+            # Calcular estadísticas
+            stats = self.get_stats()
+            elapsed = current_time - last_stats_time
+            packets_diff = stats['dns_packets'] - last_packets
+            rate = packets_diff / elapsed if elapsed > 0 else 0
+            
+            with self.buffer_lock:
+                buffer_size = len(self.buffer)
+            
+            logger.info(
+                f"📊 Estadísticas: {stats['dns_packets']} paquetes DNS capturados | "
+                f"Rate: {rate:.1f} pkt/s | "
+                f"Buffer: {buffer_size} | "
+                f"Batches escritos: {stats.get('batches_written', 0)} | "
+                f"TCP: {stats['tcp_count']} UDP: {stats['udp_count']}"
+            )
+            
+            last_stats_time = current_time
+            last_packets = stats['dns_packets']
+    
     def start(self, redis_client=None, filter_str: str = "port 53"):
         """
         Inicia la captura de paquetes DNS
@@ -396,6 +437,9 @@ class DNSSniffer:
             # Iniciar thread para flush periódico
             self.flush_thread = threading.Thread(target=self._flush_thread_worker, daemon=True)
             self.flush_thread.start()
+            # Iniciar thread para estadísticas periódicas
+            self.stats_thread = threading.Thread(target=self._stats_thread_worker, args=(10.0,), daemon=True)
+            self.stats_thread.start()
             logger.info(f"Modo optimizado activado: batch_size={self.batch_size}, flush_interval={self.flush_interval}s")
         
         try:
@@ -419,9 +463,11 @@ class DNSSniffer:
                     if len(self.buffer) > 0:
                         logger.info(f"Realizando flush final de {len(self.buffer)} paquetes...")
                         self._flush_buffer()
-                # Esperar a que el thread termine
+                # Esperar a que los threads terminen
                 if self.flush_thread and self.flush_thread.is_alive():
                     self.flush_thread.join(timeout=2.0)
+                if self.stats_thread and self.stats_thread.is_alive():
+                    self.stats_thread.join(timeout=2.0)
     
     def get_stats(self) -> Dict[str, int]:
         """Retorna estadísticas de captura"""

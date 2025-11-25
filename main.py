@@ -88,6 +88,11 @@ def main():
         default=1.0,
         help='Intervalo en segundos para forzar escritura a Redis (default: 1.0)'
     )
+    parser.add_argument(
+        '-v', '--verbose',
+        action='store_true',
+        help='Mostrar cada paquete DNS capturado en consola'
+    )
     
     args = parser.parse_args()
     
@@ -130,7 +135,8 @@ def main():
     sniffer = DNSSniffer(
         interface=interface,
         batch_size=args.batch_size,
-        flush_interval=args.flush_interval
+        flush_interval=args.flush_interval,
+        verbose=args.verbose
     )
     
     try:
