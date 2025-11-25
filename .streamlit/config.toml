@@ -1,0 +1,50 @@
+[server]
+# Puerto para el servidor Streamlit
+port = 8501
+
+# Dirección IP (0.0.0.0 para escuchar en todas las interfaces)
+address = "0.0.0.0"
+
+# Habilitar CORS (desactivar en producción si no es necesario)
+enableCORS = false
+
+# Habilitar XSRF (recomendado en producción)
+enableXsrfProtection = true
+
+# Tamaño máximo del archivo de carga (en MB)
+maxUploadSize = 200
+
+# Tamaño máximo del mensaje (en MB)
+maxMessageSize = 200
+
+# Habilitar websocket compression
+enableWebsocketCompression = true
+
+# Headless mode (sin abrir navegador automáticamente)
+headless = true
+
+[browser]
+# No abrir el navegador automáticamente
+gatherUsageStats = false
+
+[theme]
+# Tema por defecto
+primaryColor = "#1f77b4"
+backgroundColor = "#ffffff"
+secondaryBackgroundColor = "#f0f2f6"
+textColor = "#262730"
+font = "sans serif"
+
+[runner]
+# Modo rápido (desactivar para producción)
+fastReruns = false
+
+# Magic commands habilitados
+magicEnabled = true
+
+# Instalar dependencias automáticamente
+installTracer = false
+
+# Mostrar errores en pantalla
+showErrorDetails = true
+

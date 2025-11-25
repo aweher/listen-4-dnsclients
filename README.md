@@ -102,6 +102,8 @@ python3 main.py --help
 
 ### 2. Iniciar el Dashboard
 
+#### Modo Desarrollo
+
 En otra terminal, ejecutar:
 
 ```bash
@@ -109,6 +111,42 @@ streamlit run dashboard.py
 ```
 
 El dashboard estará disponible en `http://localhost:8501`
+
+#### Modo Producción
+
+**Opción A: Usando el script proporcionado**
+
+```bash
+./run_dashboard.sh
+```
+
+**Opción B: Comando directo**
+
+```bash
+streamlit run dashboard.py \
+    --server.headless=true \
+    --server.address=0.0.0.0 \
+    --server.port=8501 \
+    --browser.gatherUsageStats=false \
+    --server.enableXsrfProtection=true
+```
+
+**Opción C: Con archivo de configuración**
+
+El proyecto incluye un archivo `.streamlit/config.toml` con configuraciones de producción. Simplemente ejecuta:
+
+```bash
+streamlit run dashboard.py
+```
+
+**Configuración de Producción:**
+
+- El dashboard escuchará en todas las interfaces (`0.0.0.0:8501`)
+- No abrirá el navegador automáticamente (`headless=true`)
+- Protección XSRF habilitada
+- Estadísticas de uso deshabilitadas
+
+**Nota de Seguridad:** Para producción, se recomienda usar un proxy reverso (nginx) con SSL/TLS para mayor seguridad.
 
 ## Estructura del Proyecto
 

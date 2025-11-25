@@ -1,0 +1,17 @@
+[Unit]
+Description=DNS Monitor Dashboard (Streamlit)
+After=network.target redis.service
+
+[Service]
+Type=simple
+User=www-data
+Group=www-data
+WorkingDirectory=/ruta/a/detectar-clientes-dns
+Environment="PATH=/usr/bin:/usr/local/bin"
+ExecStart=/usr/local/bin/streamlit run dashboard.py --server.headless=true --server.address=0.0.0.0 --server.port=8501
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target
+
