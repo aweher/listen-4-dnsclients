@@ -1,6 +1,8 @@
 # DNS Monitor - Monitor Pasivo de Consultas DNS
 
-> Hecho por Ariel S. Weher <ariel@ayuda.la>
+> Copyright (c) 2025 Ariel S. Weher <ariel@ayuda.la>
+> 
+> Licensed under the MIT License. See [LICENSE](LICENSE) for details.
 
 Sistema de monitoreo pasivo de consultas DNS que captura tráfico DNS en tiempo real, almacena estadísticas en Redis y proporciona un dashboard interactivo para visualización.
 

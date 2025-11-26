@@ -1,5 +1,9 @@
 # Guía de Despliegue en Producción
 
+> Copyright (c) 2025 Ariel S. Weher <ariel@ayuda.la>
+> 
+> Licensed under the MIT License. See [LICENSE](LICENSE) for details.
+
 Esta guía explica cómo ejecutar el DNS Monitor Dashboard en modo producción.
 
 ## Opciones de Ejecución
@@ -246,4 +250,5 @@ Asegúrate de que el usuario que ejecuta el servicio tenga permisos para:
 1. Verifica que `address = "0.0.0.0"` en `.streamlit/config.toml`
 2. Verifica el firewall
 3. Verifica que no haya otro proceso usando el puerto 8501
+
 
