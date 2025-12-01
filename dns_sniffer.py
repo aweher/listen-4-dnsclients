@@ -56,7 +56,7 @@ class DNSSniffer:
         255: 'ANY'
     }
     
-    def __init__(self, interface: Optional[str] = None, batch_size: int = 50, flush_interval: float = 1.0, verbose: bool = False):
+    def __init__(self, interface: Optional[str] = None, batch_size: int = 50, flush_interval: float = 1.0, verbose: bool = False, max_buffer_size: int = 10000):
         """
         Inicializa el capturador DNS
         
@@ -65,11 +65,13 @@ class DNSSniffer:
             batch_size: Número de paquetes a acumular antes de escribir a Redis (default: 50)
             flush_interval: Intervalo en segundos para forzar escritura a Redis (default: 1.0)
             verbose: Si es True, muestra cada paquete capturado en consola
+            max_buffer_size: Tamaño máximo del buffer antes de descartar paquetes (default: 10000)
         """
         self.interface = interface
         self.batch_size = batch_size
         self.flush_interval = flush_interval
         self.verbose = verbose
+        self.max_buffer_size = max_buffer_size
         self.stats = {
             'total_packets': 0,
             'dns_packets': 0,
@@ -77,16 +79,21 @@ class DNSSniffer:
             'udp_count': 0,
             'errors': 0,
             'batches_written': 0,
-            'packets_buffered': 0
+            'packets_buffered': 0,
+            'packets_dropped': 0,
+            'redis_reconnects': 0
         }
         # Buffer thread-safe para acumular paquetes
         self.buffer = deque()
         self.buffer_lock = threading.Lock()
         self.last_flush = time.time()
         self.redis_client = None
+        self.redis_config = None  # Almacenar configuración para reconexión
         self.flush_thread = None
         self.stats_thread = None
         self.running = False
+        self.last_redis_check = time.time()
+        self.redis_check_interval = 5.0  # Verificar conexión Redis cada 5 segundos
     
     def _parse_dns_packet(self, packet) -> Optional[Dict[str, Any]]:
         """
@@ -239,6 +246,35 @@ class DNSSniffer:
             self.stats['errors'] += 1
             return None
     
+    def _check_redis_connection(self):
+        """
+        Verifica y reconecta a Redis si es necesario
+        """
+        if not self.redis_client or not self.redis_config:
+            return False
+        
+        try:
+            # Intentar hacer un ping
+            self.redis_client.client.ping()
+            return True
+        except Exception as e:
+            logger.warning(f"Redis desconectado, intentando reconectar: {e}")
+            try:
+                # Intentar reconectar usando la configuración guardada
+                from redis_client import DNSRedisClient
+                self.redis_client = DNSRedisClient(
+                    host=self.redis_config['host'],
+                    port=self.redis_config['port'],
+                    db=self.redis_config['db'],
+                    password=self.redis_config.get('password')
+                )
+                self.stats['redis_reconnects'] += 1
+                logger.info(f"✅ Reconectado a Redis exitosamente (reconexiones: {self.stats['redis_reconnects']})")
+                return True
+            except Exception as reconnect_error:
+                logger.error(f"Error reconectando a Redis: {reconnect_error}")
+                return False
+    
     def packet_handler(self, packet, redis_client=None):
         """
         Maneja cada paquete capturado
@@ -247,43 +283,63 @@ class DNSSniffer:
             packet: Paquete capturado
             redis_client: Cliente Redis para almacenar datos (se usa para inicialización)
         """
-        self.stats['total_packets'] += 1
-        
-        dns_data = self._parse_dns_packet(packet)
-        
-        if dns_data:
-            self.stats['dns_packets'] += 1
-            if dns_data['protocol'] == 'TCP':
-                self.stats['tcp_count'] += 1
-            else:
-                self.stats['udp_count'] += 1
+        try:
+            self.stats['total_packets'] += 1
             
-            # Mostrar paquete en consola si verbose está activado
-            if self.verbose:
-                logger.info(f"DNS: {dns_data['src_ip']} -> {dns_data['domain']} ({dns_data['record_type']}) via {dns_data['protocol']}")
+            dns_data = self._parse_dns_packet(packet)
             
-            # Almacenar en buffer si Redis está disponible
-            if self.redis_client:
-                try:
-                    with self.buffer_lock:
-                        self.buffer.append(dns_data)
-                        self.stats['packets_buffered'] += 1
-                        
-                        # Flush si el buffer alcanza el tamaño máximo
-                        if len(self.buffer) >= self.batch_size:
-                            self._flush_buffer()
-                except Exception as e:
-                    logger.error(f"Error agregando a buffer: {e}")
-                    self.stats['errors'] += 1
-            elif redis_client:
-                # Modo sin buffer (compatibilidad hacia atrás)
-                try:
-                    self._store_in_redis(redis_client, dns_data)
-                except Exception as e:
-                    logger.error(f"Error almacenando en Redis: {e}")
-                    self.stats['errors'] += 1
-            
-            logger.debug(f"DNS Packet: {dns_data['src_ip']} -> {dns_data['domain']} ({dns_data['record_type']}) via {dns_data['protocol']}")
+            if dns_data:
+                self.stats['dns_packets'] += 1
+                if dns_data['protocol'] == 'TCP':
+                    self.stats['tcp_count'] += 1
+                else:
+                    self.stats['udp_count'] += 1
+                
+                # Mostrar paquete en consola si verbose está activado
+                if self.verbose:
+                    logger.info(f"DNS: {dns_data['src_ip']} -> {dns_data['domain']} ({dns_data['record_type']}) via {dns_data['protocol']}")
+                
+                # Verificar conexión Redis periódicamente
+                current_time = time.time()
+                if (current_time - self.last_redis_check) >= self.redis_check_interval:
+                    self._check_redis_connection()
+                    self.last_redis_check = current_time
+                
+                # Almacenar en buffer si Redis está disponible
+                if self.redis_client:
+                    try:
+                        with self.buffer_lock:
+                            # Verificar si el buffer está lleno
+                            if len(self.buffer) >= self.max_buffer_size:
+                                # Descartar el paquete más antiguo
+                                self.buffer.popleft()
+                                self.stats['packets_dropped'] += 1
+                                if self.stats['packets_dropped'] % 100 == 0:
+                                    logger.warning(f"⚠️ Buffer lleno: {self.stats['packets_dropped']} paquetes descartados")
+                            
+                            self.buffer.append(dns_data)
+                            self.stats['packets_buffered'] += 1
+                            
+                            # Flush si el buffer alcanza el tamaño máximo
+                            if len(self.buffer) >= self.batch_size:
+                                # No hacer flush aquí para evitar bloqueos, el thread lo hará
+                                pass
+                    except Exception as e:
+                        logger.error(f"Error agregando a buffer: {e}")
+                        self.stats['errors'] += 1
+                elif redis_client:
+                    # Modo sin buffer (compatibilidad hacia atrás)
+                    try:
+                        self._store_in_redis(redis_client, dns_data)
+                    except Exception as e:
+                        logger.error(f"Error almacenando en Redis: {e}")
+                        self.stats['errors'] += 1
+                
+                logger.debug(f"DNS Packet: {dns_data['src_ip']} -> {dns_data['domain']} ({dns_data['record_type']}) via {dns_data['protocol']}")
+        except Exception as e:
+            # Capturar cualquier excepción para evitar que detenga el sniffer
+            logger.error(f"Error en packet_handler (no se detendrá el sniffer): {e}")
+            self.stats['errors'] += 1
     
     def _store_in_redis(self, redis_client, dns_data: Dict[str, Any]):
         """
@@ -345,6 +401,14 @@ class DNSSniffer:
         Escribe todos los paquetes del buffer a Redis usando pipeline para optimizar
         """
         if not self.redis_client:
+            # Intentar reconectar si no hay cliente
+            if self.redis_config:
+                self._check_redis_connection()
+            return
+        
+        # Verificar conexión antes de escribir
+        if not self._check_redis_connection():
+            logger.warning("Redis no disponible, omitiendo flush")
             return
         
         # Extraer todos los paquetes del buffer (thread-safe)
@@ -352,8 +416,13 @@ class DNSSniffer:
         with self.buffer_lock:
             if len(self.buffer) == 0:
                 return
-            while self.buffer:
-                packets_to_write.append(self.buffer.popleft())
+            # Limitar la cantidad de paquetes a escribir en cada batch para evitar timeouts
+            max_batch = min(len(self.buffer), self.batch_size * 2)
+            for _ in range(max_batch):
+                if self.buffer:
+                    packets_to_write.append(self.buffer.popleft())
+                else:
+                    break
         
         if not packets_to_write:
             return
@@ -420,9 +489,21 @@ class DNSSniffer:
         except Exception as e:
             logger.error(f"Error escribiendo batch a Redis: {e}")
             self.stats['errors'] += 1
-            # Re-agregar los paquetes al buffer para reintentar
+            # Intentar reconectar
+            self._check_redis_connection()
+            # Re-agregar solo una parte de los paquetes al buffer para evitar crecimiento indefinido
+            # Si el buffer ya está muy lleno, descartar algunos paquetes
             with self.buffer_lock:
-                self.buffer.extendleft(reversed(packets_to_write))
+                current_buffer_size = len(self.buffer)
+                if current_buffer_size < self.max_buffer_size * 0.8:
+                    # Re-agregar todos los paquetes
+                    self.buffer.extendleft(reversed(packets_to_write))
+                else:
+                    # Descartar la mitad y re-agregar la otra mitad
+                    packets_to_retry = packets_to_write[:len(packets_to_write)//2]
+                    self.buffer.extendleft(reversed(packets_to_retry))
+                    self.stats['packets_dropped'] += len(packets_to_write) - len(packets_to_retry)
+                    logger.warning(f"Buffer casi lleno, descartando {len(packets_to_write) - len(packets_to_retry)} paquetes")
     
     def _flush_thread_worker(self):
         """
@@ -467,9 +548,12 @@ class DNSSniffer:
             logger.info(
                 f"📊 Estadísticas: {stats['dns_packets']} paquetes DNS capturados | "
                 f"Rate: {rate:.1f} pkt/s | "
-                f"Buffer: {buffer_size} | "
+                f"Buffer: {buffer_size}/{self.max_buffer_size} | "
                 f"Batches escritos: {stats.get('batches_written', 0)} | "
-                f"TCP: {stats['tcp_count']} UDP: {stats['udp_count']}"
+                f"TCP: {stats['tcp_count']} UDP: {stats['udp_count']} | "
+                f"Errores: {stats.get('errors', 0)} | "
+                f"Descartados: {stats.get('packets_dropped', 0)} | "
+                f"Reconexiones Redis: {stats.get('redis_reconnects', 0)}"
             )
             
             last_stats_time = current_time
@@ -489,6 +573,25 @@ class DNSSniffer:
         # Configurar Redis y buffer si está disponible
         if redis_client:
             self.redis_client = redis_client
+            # Guardar configuración para reconexión
+            if hasattr(redis_client, 'client'):
+                # Es un DNSRedisClient, extraer configuración del cliente interno
+                client = redis_client.client
+                self.redis_config = {
+                    'host': client.connection_pool.connection_kwargs.get('host', 'localhost'),
+                    'port': client.connection_pool.connection_kwargs.get('port', 6379),
+                    'db': client.connection_pool.connection_kwargs.get('db', 0),
+                    'password': client.connection_pool.connection_kwargs.get('password')
+                }
+            else:
+                # Es un redis.Redis directo
+                self.redis_config = {
+                    'host': redis_client.connection_pool.connection_kwargs.get('host', 'localhost'),
+                    'port': redis_client.connection_pool.connection_kwargs.get('port', 6379),
+                    'db': redis_client.connection_pool.connection_kwargs.get('db', 0),
+                    'password': redis_client.connection_pool.connection_kwargs.get('password')
+                }
+            
             self.running = True
             # Iniciar thread para flush periódico
             self.flush_thread = threading.Thread(target=self._flush_thread_worker, daemon=True)
@@ -496,20 +599,46 @@ class DNSSniffer:
             # Iniciar thread para estadísticas periódicas
             self.stats_thread = threading.Thread(target=self._stats_thread_worker, args=(10.0,), daemon=True)
             self.stats_thread.start()
-            logger.info(f"Modo optimizado activado: batch_size={self.batch_size}, flush_interval={self.flush_interval}s")
+            logger.info(f"Modo optimizado activado: batch_size={self.batch_size}, flush_interval={self.flush_interval}s, max_buffer={self.max_buffer_size}")
+        
+        # Wrapper seguro para el callback que captura todas las excepciones
+        def safe_packet_handler(packet):
+            try:
+                self.packet_handler(packet, redis_client)
+            except Exception as e:
+                # Capturar cualquier excepción para evitar que detenga sniff()
+                logger.error(f"Error crítico en packet_handler (sniffer continuará): {e}")
+                self.stats['errors'] += 1
+        
+        # Loop de reintentos para sniff() en caso de que falle
+        max_retries = 5
+        retry_delay = 5.0
         
         try:
-            sniff(
-                iface=self.interface,
-                filter=filter_str,
-                prn=lambda p: self.packet_handler(p, redis_client),
-                store=False  # No almacenar paquetes en memoria
-            )
-        except KeyboardInterrupt:
-            logger.info("Captura interrumpida por el usuario")
-        except Exception as e:
-            logger.error(f"Error en captura: {e}")
-            raise
+            for attempt in range(max_retries):
+                try:
+                    logger.info(f"Iniciando captura (intento {attempt + 1}/{max_retries})...")
+                    sniff(
+                        iface=self.interface,
+                        filter=filter_str,
+                        prn=safe_packet_handler,
+                        store=False  # No almacenar paquetes en memoria
+                    )
+                    # Si sniff() termina normalmente (sin excepción), salir del loop
+                    break
+                except KeyboardInterrupt:
+                    logger.info("Captura interrumpida por el usuario")
+                    break
+                except Exception as e:
+                    logger.error(f"Error en captura (intento {attempt + 1}/{max_retries}): {e}")
+                    if attempt < max_retries - 1:
+                        logger.info(f"Reintentando en {retry_delay} segundos...")
+                        time.sleep(retry_delay)
+                        # Aumentar el delay para el siguiente intento
+                        retry_delay = min(retry_delay * 1.5, 30.0)
+                    else:
+                        logger.error("Máximo número de reintentos alcanzado. Deteniendo sniffer.")
+                        raise
         finally:
             # Asegurar que el buffer se vacíe antes de terminar
             self.running = False
