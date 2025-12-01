@@ -105,6 +105,44 @@ class DNSRedisClient:
         domains.sort(key=lambda x: x['count'], reverse=True)
         return domains[:limit]
     
+    def get_all_clients(self) -> List[Dict[str, Any]]:
+        """
+        Obtiene todos los clientes (IPs) que han realizado consultas
+        
+        Returns:
+            Lista de diccionarios con IP y cantidad de consultas, ordenada por cantidad descendente
+        """
+        clients = []
+        pattern = "dns:client:*:count"
+        
+        for key in self.client.scan_iter(match=pattern):
+            count = int(self.client.get(key) or 0)
+            ip = key.replace("dns:client:", "").replace(":count", "")
+            clients.append({'ip': ip, 'count': count})
+        
+        # Ordenar por cantidad descendente
+        clients.sort(key=lambda x: x['count'], reverse=True)
+        return clients
+    
+    def get_all_domains(self) -> List[Dict[str, Any]]:
+        """
+        Obtiene todos los dominios consultados
+        
+        Returns:
+            Lista de diccionarios con dominio y cantidad de consultas, ordenada por cantidad descendente
+        """
+        domains = []
+        pattern = "dns:domain:*:count"
+        
+        for key in self.client.scan_iter(match=pattern):
+            count = int(self.client.get(key) or 0)
+            domain = key.replace("dns:domain:", "").replace(":count", "")
+            domains.append({'domain': domain, 'count': count})
+        
+        # Ordenar por cantidad descendente
+        domains.sort(key=lambda x: x['count'], reverse=True)
+        return domains
+    
     def get_record_type_stats(self) -> Dict[str, int]:
         """
         Obtiene estadísticas por tipo de registro DNS

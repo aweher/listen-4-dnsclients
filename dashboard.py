@@ -362,6 +362,119 @@ except Exception as e:
 
 st.markdown("---")
 
+# Tablas detalladas completas
+st.header("📋 Tablas Detalladas Completas")
+
+# Tabla de todos los clientes
+st.subheader("👥 Totalidad de Clientes")
+try:
+    all_clients = redis_client.get_all_clients()
+    if all_clients:
+        df_all_clients = pd.DataFrame(all_clients)
+        df_all_clients.index = range(1, len(df_all_clients) + 1)  # Índice empezando en 1
+        
+        # Mostrar métricas rápidas
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Clientes", len(all_clients))
+        with col2:
+            total_client_queries = df_all_clients['count'].sum()
+            st.metric("Total Consultas", total_client_queries)
+        with col3:
+            avg_queries = df_all_clients['count'].mean() if len(all_clients) > 0 else 0
+            st.metric("Promedio Consultas/Cliente", f"{avg_queries:.1f}")
+        
+        # Mostrar tabla con opciones de búsqueda y ordenamiento
+        st.dataframe(
+            df_all_clients,
+            use_container_width=True,
+            height=600,
+            column_config={
+                "ip": st.column_config.TextColumn(
+                    "IP de Origen",
+                    help="Dirección IP del cliente que realizó las consultas DNS"
+                ),
+                "count": st.column_config.NumberColumn(
+                    "Consultas",
+                    help="Número total de consultas DNS realizadas por este cliente",
+                    format="%d"
+                )
+            }
+        )
+        
+        # Opción para descargar CSV
+        csv_clients = df_all_clients.to_csv(index=False)
+        st.download_button(
+            label="📥 Descargar CSV de Clientes",
+            data=csv_clients,
+            file_name=f"clientes_dns_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No hay datos de clientes disponibles")
+except Exception as e:
+    st.error(f"Error obteniendo todos los clientes: {e}")
+    import traceback
+    with st.expander("Detalles del error"):
+        st.code(traceback.format_exc())
+
+st.markdown("---")
+
+# Tabla de todos los dominios
+st.subheader("🌍 Totalidad de Dominios Consultados")
+try:
+    all_domains = redis_client.get_all_domains()
+    if all_domains:
+        df_all_domains = pd.DataFrame(all_domains)
+        df_all_domains.index = range(1, len(df_all_domains) + 1)  # Índice empezando en 1
+        
+        # Mostrar métricas rápidas
+        col1, col2, col3 = st.columns(3)
+        with col1:
+            st.metric("Total Dominios", len(all_domains))
+        with col2:
+            total_domain_queries = df_all_domains['count'].sum()
+            st.metric("Total Consultas", total_domain_queries)
+        with col3:
+            avg_queries = df_all_domains['count'].mean() if len(all_domains) > 0 else 0
+            st.metric("Promedio Consultas/Dominio", f"{avg_queries:.1f}")
+        
+        # Mostrar tabla con opciones de búsqueda y ordenamiento
+        st.dataframe(
+            df_all_domains,
+            use_container_width=True,
+            height=600,
+            column_config={
+                "domain": st.column_config.TextColumn(
+                    "Dominio",
+                    help="Nombre del dominio consultado"
+                ),
+                "count": st.column_config.NumberColumn(
+                    "Consultas",
+                    help="Número total de consultas DNS realizadas para este dominio",
+                    format="%d"
+                )
+            }
+        )
+        
+        # Opción para descargar CSV
+        csv_domains = df_all_domains.to_csv(index=False)
+        st.download_button(
+            label="📥 Descargar CSV de Dominios",
+            data=csv_domains,
+            file_name=f"dominios_dns_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            mime="text/csv"
+        )
+    else:
+        st.info("No hay datos de dominios disponibles")
+except Exception as e:
+    st.error(f"Error obteniendo todos los dominios: {e}")
+    import traceback
+    with st.expander("Detalles del error"):
+        st.code(traceback.format_exc())
+
+st.markdown("---")
+
 # Estadísticas por período
 st.subheader("📈 Estadísticas por Período")
 time_range = st.selectbox(

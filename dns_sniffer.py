@@ -246,6 +246,23 @@ class DNSSniffer:
             self.stats['errors'] += 1
             return None
     
+    def _get_redis_client(self):
+        """
+        Obtiene el cliente Redis real, manejando tanto DNSRedisClient como redis.Redis directo
+        
+        Returns:
+            Cliente redis.Redis real o None si no está disponible
+        """
+        if not self.redis_client:
+            return None
+        
+        # Si es DNSRedisClient, tiene atributo .client
+        if hasattr(self.redis_client, 'client'):
+            return self.redis_client.client
+        # Si es redis.Redis directo, retornarlo tal cual
+        else:
+            return self.redis_client
+    
     def _check_redis_connection(self):
         """
         Verifica y reconecta a Redis si es necesario
@@ -254,8 +271,13 @@ class DNSSniffer:
             return False
         
         try:
+            # Obtener el cliente Redis real
+            client = self._get_redis_client()
+            if not client:
+                return False
+            
             # Intentar hacer un ping
-            self.redis_client.client.ping()
+            client.ping()
             return True
         except Exception as e:
             logger.warning(f"Redis desconectado, intentando reconectar: {e}")
@@ -428,10 +450,15 @@ class DNSSniffer:
             return
         
         try:
+            # Obtener el cliente Redis real
+            client = self._get_redis_client()
+            if not client:
+                logger.warning("Cliente Redis no disponible para flush")
+                return
+            
             # Usar pipeline de Redis para agrupar todas las operaciones
             # Esto reduce significativamente los round-trips, especialmente importante con AOF
-            # Acceder al cliente Redis interno del DNSRedisClient
-            pipe = self.redis_client.client.pipeline()
+            pipe = client.pipeline()
             
             current_time = datetime.now()
             timestamp_base = current_time.timestamp()
