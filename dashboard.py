@@ -85,7 +85,7 @@ redis_password = redis_config['password']
 # Sidebar - Configuración
 st.sidebar.title("⚙️ Configuración")
 auto_refresh = st.sidebar.checkbox("Auto-refresh", value=True)
-refresh_interval = st.sidebar.slider("Intervalo (segundos)", 1, 60, 5)
+refresh_interval = st.sidebar.slider("Intervalo (segundos)", 1, 600, 180)
 
 # Botón de cierre de sesión
 st.sidebar.markdown("---")
