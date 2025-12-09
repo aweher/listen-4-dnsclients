@@ -6,10 +6,10 @@
 # to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
 # copies of the Software, and to permit persons to whom the Software is
 # furnished to do so, subject to the following conditions:
-# 
+#
 # The above copyright notice and this permission notice shall be included in all
 # copies or substantial portions of the Software.
-# 
+#
 # THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
 # IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
 # FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
@@ -83,76 +83,6 @@ services:
       retries: 5
       start_period: 10s
 
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    container_name: dns-monitor-clickhouse
-    ports:
-      - "8123:8123"  # HTTP interface
-      - "9000:9000"  # Native protocol
-    volumes:
-      - clickhouse-data:/var/lib/clickhouse
-      - clickhouse-logs:/var/log/clickhouse-server
-    environment:
-      CLICKHOUSE_DB: dns_monitor
-      CLICKHOUSE_USER: default
-      CLICKHOUSE_PASSWORD: ""
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: 1
-    ulimits:
-      nofile:
-        soft: 262144
-        hard: 262144
-    # Límites de recursos para evitar saturación del host
-    deploy:
-      resources:
-        limits:
-          cpus: '2.0'
-          memory: 2G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
-    # Límites de recursos (compatibilidad con docker-compose sin swarm)
-    mem_limit: 2g
-    mem_reservation: 512m
-    cpus: 2.0
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "wget", "--spider", "-q", "http://localhost:8123/ping"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-      start_period: 30s
-
-  dashboard:
-    build:
-      context: .
-      dockerfile: Dockerfile.dashboard
-    container_name: dns-monitor-dashboard
-    ports:
-      - "8501:8501"
-    volumes:
-      # Montar config.yaml como volumen para poder editarlo sin reconstruir
-      # Si no existe config.yaml localmente, comenta esta línea y el contenedor creará uno por defecto
-      - ./config.yaml:/app/config.yaml
-    environment:
-      # Configuración de Redis (se conecta al servicio redis del docker-compose)
-      - REDIS_HOST=redis
-      - REDIS_PORT=6379
-      # Configuración de ClickHouse
-      - CLICKHOUSE_HOST=clickhouse
-      - CLICKHOUSE_PORT=9000
-    depends_on:
-      redis:
-        condition: service_healthy
-      clickhouse:
-        condition: service_healthy
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "python", "-c", "import socket; s=socket.socket(); s.connect(('localhost', 8501)); s.close()"]
-      interval: 30s
-      timeout: 10s
-      start_period: 10s
-      retries: 3
-
 volumes:
   redis-data:
     driver: local
@@ -160,16 +90,3 @@ volumes:
       type: none
       o: bind
       device: ${PWD}/data/redis
-  clickhouse-data:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${PWD}/data/clickhouse
-  clickhouse-logs:
-    driver: local
-    driver_opts:
-      type: none
-      o: bind
-      device: ${PWD}/data/clickhouse-logs
-
