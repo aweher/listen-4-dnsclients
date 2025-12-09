@@ -5,6 +5,14 @@ redis:
   db: 0
   password: null  # Configurar contraseña si es necesario (ejemplo: "mi_password")
 
+# Configuración del servidor ClickHouse
+clickhouse:
+  host: localhost
+  port: 9000  # Puerto nativo de ClickHouse
+  database: dns_monitor
+  user: default
+  password: null  # Configurar contraseña si es necesario (ejemplo: "mi_password")
+
 # Configuración del sniffer DNS
 sniffer:
   interface: null  # null = todas las interfaces

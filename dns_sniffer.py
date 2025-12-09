@@ -89,11 +89,15 @@ class DNSSniffer:
         self.last_flush = time.time()
         self.redis_client = None
         self.redis_config = None  # Almacenar configuración para reconexión
+        self.clickhouse_client = None
+        self.clickhouse_config = None  # Almacenar configuración para reconexión
         self.flush_thread = None
         self.stats_thread = None
         self.running = False
         self.last_redis_check = time.time()
         self.redis_check_interval = 5.0  # Verificar conexión Redis cada 5 segundos
+        self.last_clickhouse_check = time.time()
+        self.clickhouse_check_interval = 5.0  # Verificar conexión ClickHouse cada 5 segundos
     
     def _parse_dns_packet(self, packet) -> Optional[Dict[str, Any]]:
         """
@@ -297,6 +301,35 @@ class DNSSniffer:
                 logger.error(f"Error reconectando a Redis: {reconnect_error}")
                 return False
     
+    def _check_clickhouse_connection(self):
+        """
+        Verifica y reconecta a ClickHouse si es necesario
+        """
+        if not self.clickhouse_client or not self.clickhouse_config:
+            return False
+        
+        try:
+            # Intentar hacer una consulta simple
+            self.clickhouse_client.client.execute('SELECT 1')
+            return True
+        except Exception as e:
+            logger.warning(f"ClickHouse desconectado, intentando reconectar: {e}")
+            try:
+                # Intentar reconectar usando la configuración guardada
+                from clickhouse_client import DNSClickHouseClient
+                self.clickhouse_client = DNSClickHouseClient(
+                    host=self.clickhouse_config['host'],
+                    port=self.clickhouse_config['port'],
+                    database=self.clickhouse_config['database'],
+                    user=self.clickhouse_config['user'],
+                    password=self.clickhouse_config.get('password')
+                )
+                logger.info("✅ Reconectado a ClickHouse exitosamente")
+                return True
+            except Exception as reconnect_error:
+                logger.error(f"Error reconectando a ClickHouse: {reconnect_error}")
+                return False
+    
     def packet_handler(self, packet, redis_client=None):
         """
         Maneja cada paquete capturado
@@ -327,8 +360,13 @@ class DNSSniffer:
                     self._check_redis_connection()
                     self.last_redis_check = current_time
                 
-                # Almacenar en buffer si Redis está disponible
-                if self.redis_client:
+                # Verificar conexión ClickHouse periódicamente
+                if (current_time - self.last_clickhouse_check) >= self.clickhouse_check_interval:
+                    self._check_clickhouse_connection()
+                    self.last_clickhouse_check = current_time
+                
+                # Almacenar en buffer si Redis o ClickHouse están disponibles
+                if self.redis_client or self.clickhouse_client:
                     try:
                         with self.buffer_lock:
                             # Verificar si el buffer está lleno
@@ -420,17 +458,36 @@ class DNSSniffer:
     
     def _flush_buffer(self):
         """
-        Escribe todos los paquetes del buffer a Redis usando pipeline para optimizar
+        Escribe todos los paquetes del buffer a Redis y ClickHouse usando pipeline para optimizar
         """
-        if not self.redis_client:
-            # Intentar reconectar si no hay cliente
+        # Verificar si hay al menos un cliente disponible
+        has_redis = self.redis_client is not None
+        has_clickhouse = self.clickhouse_client is not None
+        
+        if not has_redis and not has_clickhouse:
+            # Intentar reconectar si hay configuración pero no cliente
             if self.redis_config:
                 self._check_redis_connection()
+            if self.clickhouse_config:
+                self._check_clickhouse_connection()
             return
         
-        # Verificar conexión antes de escribir
-        if not self._check_redis_connection():
-            logger.warning("Redis no disponible, omitiendo flush")
+        # Verificar conexiones antes de escribir
+        redis_available = False
+        clickhouse_available = False
+        
+        if has_redis:
+            redis_available = self._check_redis_connection()
+            if not redis_available:
+                logger.warning("Redis no disponible, omitiendo escritura a Redis")
+        
+        if has_clickhouse:
+            clickhouse_available = self._check_clickhouse_connection()
+            if not clickhouse_available:
+                logger.warning("ClickHouse no disponible, omitiendo escritura a ClickHouse")
+        
+        if not redis_available and not clickhouse_available:
+            logger.warning("Ningún almacén de datos disponible, omitiendo flush")
             return
         
         # Extraer todos los paquetes del buffer (thread-safe)
@@ -449,77 +506,88 @@ class DNSSniffer:
         if not packets_to_write:
             return
         
-        try:
-            # Obtener el cliente Redis real
-            client = self._get_redis_client()
-            if not client:
-                logger.warning("Cliente Redis no disponible para flush")
-                return
-            
-            # Usar pipeline de Redis para agrupar todas las operaciones
-            # Esto reduce significativamente los round-trips, especialmente importante con AOF
-            pipe = client.pipeline()
-            
-            current_time = datetime.now()
-            timestamp_base = current_time.timestamp()
-            
-            for i, dns_data in enumerate(packets_to_write):
-                # Usar microsegundos para asegurar unicidad
-                timestamp_str = f"{current_time.strftime('%Y%m%d%H%M%S')}{i:06d}"
-                key = f"dns:packet:{timestamp_str}"
-                timestamp_val = timestamp_base + (i * 0.000001)  # Asegurar orden
-                
-                # Almacenar el paquete completo
-                pipe.setex(key, 86400 * 7, json.dumps(dns_data))
-                
-                # Estadísticas por IP de origen
-                src_ip_key = f"dns:client:{dns_data['src_ip']}"
-                pipe.incr(f"{src_ip_key}:count")
-                pipe.expire(f"{src_ip_key}:count", 86400 * 30)
-                
-                # Dominios más consultados
-                domain_key = f"dns:domain:{dns_data['domain']}"
-                pipe.incr(f"{domain_key}:count")
-                pipe.expire(f"{domain_key}:count", 86400 * 30)
-                
-                # Estadísticas por tipo de registro
-                record_type_key = f"dns:type:{dns_data['record_type']}"
-                pipe.incr(f"{record_type_key}:count")
-                pipe.expire(f"{record_type_key}:count", 86400 * 30)
-                
-                # Estadísticas TCP vs UDP
-                protocol_key = f"dns:protocol:{dns_data['protocol']}"
-                pipe.incr(f"{protocol_key}:count")
-                pipe.expire(f"{protocol_key}:count", 86400 * 30)
-                
-                # Timestamp para consultas recientes
-                pipe.zadd("dns:recent", {key: timestamp_val})
-                
-                # IPs de origen únicas
-                pipe.sadd("dns:clients:unique", dns_data['src_ip'])
-                
-                # Dominios únicos
-                pipe.sadd("dns:domains:unique", dns_data['domain'])
-            
-            # Expirar sets una sola vez por batch (más eficiente)
-            pipe.expire("dns:recent", 86400 * 7)
-            pipe.expire("dns:clients:unique", 86400 * 30)
-            pipe.expire("dns:domains:unique", 86400 * 30)
-            
-            # Ejecutar todas las operaciones en un solo round-trip
-            pipe.execute()
-            
-            self.stats['batches_written'] += 1
-            self.last_flush = time.time()
-            logger.info(f"✅ Escritos {len(packets_to_write)} paquetes a Redis en batch (Total batches: {self.stats['batches_written']})")
-            
-        except Exception as e:
-            logger.error(f"Error escribiendo batch a Redis: {e}")
-            self.stats['errors'] += 1
-            # Intentar reconectar
-            self._check_redis_connection()
-            # Re-agregar solo una parte de los paquetes al buffer para evitar crecimiento indefinido
-            # Si el buffer ya está muy lleno, descartar algunos paquetes
+        # Escribir a Redis si está disponible
+        redis_error = False
+        if redis_available:
+            try:
+                # Obtener el cliente Redis real
+                client = self._get_redis_client()
+                if client:
+                    # Usar pipeline de Redis para agrupar todas las operaciones
+                    # Esto reduce significativamente los round-trips, especialmente importante con AOF
+                    pipe = client.pipeline()
+                    
+                    current_time = datetime.now()
+                    timestamp_base = current_time.timestamp()
+                    
+                    for i, dns_data in enumerate(packets_to_write):
+                        # Usar microsegundos para asegurar unicidad
+                        timestamp_str = f"{current_time.strftime('%Y%m%d%H%M%S')}{i:06d}"
+                        key = f"dns:packet:{timestamp_str}"
+                        timestamp_val = timestamp_base + (i * 0.000001)  # Asegurar orden
+                        
+                        # Almacenar el paquete completo
+                        pipe.setex(key, 86400 * 7, json.dumps(dns_data))
+                        
+                        # Estadísticas por IP de origen
+                        src_ip_key = f"dns:client:{dns_data['src_ip']}"
+                        pipe.incr(f"{src_ip_key}:count")
+                        pipe.expire(f"{src_ip_key}:count", 86400 * 30)
+                        
+                        # Dominios más consultados
+                        domain_key = f"dns:domain:{dns_data['domain']}"
+                        pipe.incr(f"{domain_key}:count")
+                        pipe.expire(f"{domain_key}:count", 86400 * 30)
+                        
+                        # Estadísticas por tipo de registro
+                        record_type_key = f"dns:type:{dns_data['record_type']}"
+                        pipe.incr(f"{record_type_key}:count")
+                        pipe.expire(f"{record_type_key}:count", 86400 * 30)
+                        
+                        # Estadísticas TCP vs UDP
+                        protocol_key = f"dns:protocol:{dns_data['protocol']}"
+                        pipe.incr(f"{protocol_key}:count")
+                        pipe.expire(f"{protocol_key}:count", 86400 * 30)
+                        
+                        # Timestamp para consultas recientes
+                        pipe.zadd("dns:recent", {key: timestamp_val})
+                        
+                        # IPs de origen únicas
+                        pipe.sadd("dns:clients:unique", dns_data['src_ip'])
+                        
+                        # Dominios únicos
+                        pipe.sadd("dns:domains:unique", dns_data['domain'])
+                    
+                    # Expirar sets una sola vez por batch (más eficiente)
+                    pipe.expire("dns:recent", 86400 * 7)
+                    pipe.expire("dns:clients:unique", 86400 * 30)
+                    pipe.expire("dns:domains:unique", 86400 * 30)
+                    
+                    # Ejecutar todas las operaciones en un solo round-trip
+                    pipe.execute()
+                    logger.debug(f"✅ Escritos {len(packets_to_write)} paquetes a Redis en batch")
+            except Exception as e:
+                logger.error(f"Error escribiendo batch a Redis: {e}")
+                redis_error = True
+                self.stats['errors'] += 1
+                # Intentar reconectar
+                self._check_redis_connection()
+        
+        # Escribir a ClickHouse si está disponible
+        clickhouse_error = False
+        if clickhouse_available:
+            try:
+                self.clickhouse_client.insert_batch(packets_to_write)
+                logger.debug(f"✅ Escritos {len(packets_to_write)} paquetes a ClickHouse en batch")
+            except Exception as e:
+                logger.error(f"Error escribiendo batch a ClickHouse: {e}")
+                clickhouse_error = True
+                self.stats['errors'] += 1
+                # Intentar reconectar
+                self._check_clickhouse_connection()
+        
+        # Si ambos fallaron, re-agregar paquetes al buffer
+        if redis_error and clickhouse_error:
             with self.buffer_lock:
                 current_buffer_size = len(self.buffer)
                 if current_buffer_size < self.max_buffer_size * 0.8:
@@ -531,6 +599,16 @@ class DNSSniffer:
                     self.buffer.extendleft(reversed(packets_to_retry))
                     self.stats['packets_dropped'] += len(packets_to_write) - len(packets_to_retry)
                     logger.warning(f"Buffer casi lleno, descartando {len(packets_to_write) - len(packets_to_retry)} paquetes")
+        else:
+            # Al menos uno funcionó, actualizar estadísticas
+            self.stats['batches_written'] += 1
+            self.last_flush = time.time()
+            stores_used = []
+            if redis_available and not redis_error:
+                stores_used.append("Redis")
+            if clickhouse_available and not clickhouse_error:
+                stores_used.append("ClickHouse")
+            logger.info(f"✅ Escritos {len(packets_to_write)} paquetes en batch a {', '.join(stores_used)} (Total batches: {self.stats['batches_written']})")
     
     def _flush_thread_worker(self):
         """
@@ -586,12 +664,13 @@ class DNSSniffer:
             last_stats_time = current_time
             last_packets = stats['dns_packets']
     
-    def start(self, redis_client=None, filter_str: str = "port 53"):
+    def start(self, redis_client=None, clickhouse_client=None, filter_str: str = "port 53"):
         """
         Inicia la captura de paquetes DNS
         
         Args:
             redis_client: Cliente Redis para almacenar datos
+            clickhouse_client: Cliente ClickHouse para almacenar datos
             filter_str: Filtro BPF para captura (default: port 53)
         """
         logger.info(f"Iniciando captura DNS en interfaz: {self.interface or 'todas'}")
@@ -618,7 +697,23 @@ class DNSSniffer:
                     'db': redis_client.connection_pool.connection_kwargs.get('db', 0),
                     'password': redis_client.connection_pool.connection_kwargs.get('password')
                 }
-            
+        
+        # Configurar ClickHouse si está disponible
+        if clickhouse_client:
+            self.clickhouse_client = clickhouse_client
+            # Guardar configuración para reconexión
+            if hasattr(clickhouse_client, 'client'):
+                client = clickhouse_client.client
+                self.clickhouse_config = {
+                    'host': client.host,
+                    'port': client.port,
+                    'database': client.database,
+                    'user': client.user,
+                    'password': client.password
+                }
+        
+        # Iniciar threads solo si hay al menos un cliente disponible
+        if self.redis_client or self.clickhouse_client:
             self.running = True
             # Iniciar thread para flush periódico
             self.flush_thread = threading.Thread(target=self._flush_thread_worker, daemon=True)
@@ -626,7 +721,13 @@ class DNSSniffer:
             # Iniciar thread para estadísticas periódicas
             self.stats_thread = threading.Thread(target=self._stats_thread_worker, args=(10.0,), daemon=True)
             self.stats_thread.start()
-            logger.info(f"Modo optimizado activado: batch_size={self.batch_size}, flush_interval={self.flush_interval}s, max_buffer={self.max_buffer_size}")
+            stores = []
+            if self.redis_client:
+                stores.append("Redis")
+            if self.clickhouse_client:
+                stores.append("ClickHouse")
+            logger.info(f"Modo optimizado activado con almacenes: {', '.join(stores)}")
+            logger.info(f"batch_size={self.batch_size}, flush_interval={self.flush_interval}s, max_buffer={self.max_buffer_size}")
         
         # Wrapper seguro para el callback que captura todas las excepciones
         def safe_packet_handler(packet):
@@ -669,7 +770,7 @@ class DNSSniffer:
         finally:
             # Asegurar que el buffer se vacíe antes de terminar
             self.running = False
-            if self.redis_client:
+            if self.redis_client or self.clickhouse_client:
                 # Flush final del buffer
                 with self.buffer_lock:
                     if len(self.buffer) > 0:
@@ -680,6 +781,12 @@ class DNSSniffer:
                     self.flush_thread.join(timeout=2.0)
                 if self.stats_thread and self.stats_thread.is_alive():
                     self.stats_thread.join(timeout=2.0)
+                # Cerrar conexión ClickHouse si existe
+                if self.clickhouse_client:
+                    try:
+                        self.clickhouse_client.close()
+                    except Exception as e:
+                        logger.warning(f"Error cerrando conexión ClickHouse: {e}")
     
     def get_stats(self) -> Dict[str, int]:
         """Retorna estadísticas de captura"""

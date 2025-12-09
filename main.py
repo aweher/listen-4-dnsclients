@@ -29,6 +29,7 @@ import signal
 import logging
 from dns_sniffer import DNSSniffer
 from redis_client import DNSRedisClient
+from clickhouse_client import DNSClickHouseClient
 from config import get_config
 
 logging.basicConfig(
@@ -119,6 +120,7 @@ def main():
     # Cargar configuración desde archivo
     config = get_config(args.config)
     redis_config = config.get_redis_config()
+    clickhouse_config = config.get_clickhouse_config()
     sniffer_config = config.get_sniffer_config()
     
     # Los argumentos de línea de comandos tienen prioridad sobre la configuración del archivo
@@ -151,6 +153,22 @@ def main():
             logger.error("Ejecutando sin almacenamiento en Redis...")
             redis_client = None
     
+    # Inicializar cliente ClickHouse si está configurado
+    clickhouse_client = None
+    try:
+        clickhouse_client = DNSClickHouseClient(
+            host=clickhouse_config['host'],
+            port=clickhouse_config['port'],
+            database=clickhouse_config['database'],
+            user=clickhouse_config['user'],
+            password=clickhouse_config['password']
+        )
+        logger.info(f"ClickHouse conectado exitosamente a {clickhouse_config['host']}:{clickhouse_config['port']} (DB: {clickhouse_config['database']})")
+    except Exception as e:
+        logger.warning(f"Error conectando a ClickHouse: {e}")
+        logger.warning("Ejecutando sin almacenamiento en ClickHouse...")
+        clickhouse_client = None
+    
     # Inicializar y iniciar capturador DNS
     sniffer = DNSSniffer(
         interface=interface,
@@ -162,9 +180,15 @@ def main():
     try:
         logger.info("Iniciando captura DNS...")
         logger.info("Presiona Ctrl+C para detener")
-        if redis_client:
+        if redis_client or clickhouse_client:
+            stores = []
+            if redis_client:
+                stores.append("Redis")
+            if clickhouse_client:
+                stores.append("ClickHouse")
+            logger.info(f"Almacenes de datos: {', '.join(stores)}")
             logger.info(f"Optimización activada: batch_size={args.batch_size}, flush_interval={args.flush_interval}s")
-        sniffer.start(redis_client=redis_client, filter_str=filter_str)
+        sniffer.start(redis_client=redis_client, clickhouse_client=clickhouse_client, filter_str=filter_str)
     except KeyboardInterrupt:
         logger.info("Captura interrumpida")
     except Exception as e:
@@ -180,7 +204,7 @@ def main():
         logger.info(f"UDP: {stats['udp_count']}")
         logger.info(f"Errores: {stats['errors']}")
         if 'batches_written' in stats:
-            logger.info(f"Batches escritos a Redis: {stats['batches_written']}")
+            logger.info(f"Batches escritos: {stats['batches_written']}")
             logger.info(f"Paquetes en buffer: {stats.get('packets_buffered', 0)}")
 
 

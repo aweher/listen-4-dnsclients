@@ -64,6 +64,13 @@ class Config:
                     'db': 0,
                     'password': None
                 },
+                'clickhouse': {
+                    'host': 'localhost',
+                    'port': 9000,
+                    'database': 'dns_monitor',
+                    'user': 'default',
+                    'password': None
+                },
                 'sniffer': {
                     'interface': None,
                     'filter': 'port 53'
@@ -125,6 +132,22 @@ class Config:
             'filter': sniffer_config.get('filter', 'port 53')
         }
     
+    def get_clickhouse_config(self) -> Dict[str, Any]:
+        """
+        Obtiene la configuración de ClickHouse
+        
+        Returns:
+            Diccionario con host, port, database, user, password
+        """
+        clickhouse_config = self._config.get('clickhouse', {})
+        return {
+            'host': clickhouse_config.get('host', 'localhost'),
+            'port': clickhouse_config.get('port', 9000),
+            'database': clickhouse_config.get('database', 'dns_monitor'),
+            'user': clickhouse_config.get('user', 'default'),
+            'password': clickhouse_config.get('password') if clickhouse_config.get('password') else None
+        }
+    
     def get_auth_config(self) -> Dict[str, str]:
         """
         Obtiene la configuración de autenticación
@@ -171,6 +194,35 @@ class Config:
             self._config['redis']['db'] = db
         if password is not None:
             self._config['redis']['password'] = password
+        
+        self._save_config(self._config)
+    
+    def update_clickhouse_config(self, host: Optional[str] = None, port: Optional[int] = None,
+                                 database: Optional[str] = None, user: Optional[str] = None,
+                                 password: Optional[str] = None):
+        """
+        Actualiza la configuración de ClickHouse
+        
+        Args:
+            host: Host de ClickHouse
+            port: Puerto de ClickHouse
+            database: Nombre de la base de datos
+            user: Usuario de ClickHouse
+            password: Contraseña de ClickHouse
+        """
+        if 'clickhouse' not in self._config:
+            self._config['clickhouse'] = {}
+        
+        if host is not None:
+            self._config['clickhouse']['host'] = host
+        if port is not None:
+            self._config['clickhouse']['port'] = port
+        if database is not None:
+            self._config['clickhouse']['database'] = database
+        if user is not None:
+            self._config['clickhouse']['user'] = user
+        if password is not None:
+            self._config['clickhouse']['password'] = password
         
         self._save_config(self._config)
     

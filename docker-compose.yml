@@ -137,13 +137,8 @@ services:
       # Configuración de Redis (se conecta al servicio redis del docker-compose)
       - REDIS_HOST=redis
       - REDIS_PORT=6379
-      # Configuración de ClickHouse
-      - CLICKHOUSE_HOST=clickhouse
-      - CLICKHOUSE_PORT=9000
     depends_on:
       redis:
-        condition: service_healthy
-      clickhouse:
         condition: service_healthy
     restart: unless-stopped
     healthcheck:
@@ -159,17 +154,17 @@ volumes:
     driver_opts:
       type: none
       o: bind
-      device: ${PWD}/data/redis
+      device: ./data/redis
   clickhouse-data:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${PWD}/data/clickhouse
+      device: ./data/clickhouse
   clickhouse-logs:
     driver: local
     driver_opts:
       type: none
       o: bind
-      device: ${PWD}/data/clickhouse-logs
+      device: ./data/clickhouse-logs
 
