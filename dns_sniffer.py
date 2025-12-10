@@ -791,4 +791,3 @@ class DNSSniffer:
     def get_stats(self) -> Dict[str, int]:
         """Retorna estadísticas de captura"""
         return self.stats.copy()
-

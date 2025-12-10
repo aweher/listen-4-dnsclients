@@ -59,6 +59,7 @@ OPCIONES:
     redis          Instalar solo Redis
     clickhouse     Instalar solo ClickHouse
     dashboard      Instalar solo Dashboard (requiere Redis y ClickHouse)
+    sniffer        Instalar solo Sniffer (crea virtualenv e instala dependencias)
     all            Instalar todos los componentes (Redis, ClickHouse y Dashboard)
     stop           Detener todos los servicios
     restart        Reiniciar todos los servicios
@@ -70,6 +71,7 @@ OPCIONES:
 EJEMPLOS:
     $0 redis              # Instalar solo Redis
     $0 clickhouse         # Instalar solo ClickHouse
+    $0 sniffer            # Instalar solo Sniffer
     $0 all                # Instalar todos los componentes
     $0 stop               # Detener todos los servicios
     $0 logs               # Ver logs de todos los servicios
@@ -99,6 +101,26 @@ check_dependencies() {
     fi
     
     success "Dependencias verificadas"
+}
+
+# Función para verificar dependencias de Python
+check_python_dependencies() {
+    info "Verificando dependencias de Python..."
+    
+    if ! command -v python3 &> /dev/null; then
+        error "Python 3 no está instalado. Por favor, instala Python 3 primero."
+        exit 1
+    fi
+    
+    local python_version=$(python3 --version 2>&1 | awk '{print $2}')
+    info "Python versión: $python_version"
+    
+    if ! command -v pip3 &> /dev/null && ! python3 -m pip --version &> /dev/null; then
+        error "pip3 no está instalado. Por favor, instala pip3 primero."
+        exit 1
+    fi
+    
+    success "Dependencias de Python verificadas"
 }
 
 # Función para crear directorios de datos
@@ -185,6 +207,251 @@ install_dashboard() {
     info "Dashboard está disponible en http://localhost:8501"
 }
 
+# Función para instalar Sniffer
+install_sniffer() {
+    info "Instalando Sniffer..."
+    check_python_dependencies
+    
+    # Obtener el directorio del script (directorio del proyecto)
+    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local venv_dir="$project_dir/venv"
+    
+    # Verificar que main.py existe
+    if [ ! -f "$project_dir/main.py" ]; then
+        error "El archivo main.py no existe en el directorio del proyecto."
+        exit 1
+    fi
+    
+    # Verificar que requirements.txt existe
+    if [ ! -f "$project_dir/requirements.txt" ]; then
+        error "El archivo requirements.txt no existe en el directorio del proyecto."
+        exit 1
+    fi
+    
+    # Crear directorio venv si no existe
+    if [ ! -d "$venv_dir" ]; then
+        info "Creando virtualenv en $venv_dir..."
+        if command -v python3 &> /dev/null; then
+            python3 -m venv "$venv_dir"
+        else
+            error "No se pudo crear el virtualenv. Python3 no está disponible."
+            exit 1
+        fi
+        
+        if [ $? -eq 0 ]; then
+            success "Virtualenv creado en $venv_dir"
+        else
+            error "Error al crear el virtualenv"
+            exit 1
+        fi
+    else
+        info "Virtualenv ya existe en $venv_dir"
+    fi
+    
+    # Activar virtualenv e instalar dependencias
+    info "Instalando dependencias de Python en el virtualenv..."
+    
+    # Verificar que el virtualenv tenga pip
+    if [ ! -f "$venv_dir/bin/pip" ] && [ ! -f "$venv_dir/bin/pip3" ]; then
+        info "Actualizando pip en el virtualenv..."
+        if [ -f "$venv_dir/bin/python3" ]; then
+            "$venv_dir/bin/python3" -m ensurepip --upgrade || "$venv_dir/bin/python3" -m pip install --upgrade pip
+        fi
+    fi
+    
+    # Determinar el comando pip del virtualenv
+    local venv_pip
+    if [ -f "$venv_dir/bin/pip3" ]; then
+        venv_pip="$venv_dir/bin/pip3"
+    elif [ -f "$venv_dir/bin/pip" ]; then
+        venv_pip="$venv_dir/bin/pip"
+    else
+        error "No se encontró pip en el virtualenv"
+        exit 1
+    fi
+    
+    # Instalar requerimientos
+    "$venv_pip" install --upgrade pip
+    "$venv_pip" install -r "$project_dir/requirements.txt"
+    
+    if [ $? -eq 0 ]; then
+        success "Dependencias de Python instaladas correctamente en el virtualenv"
+    else
+        error "Error al instalar dependencias de Python"
+        exit 1
+    fi
+    
+    # Verificar que config.yaml existe
+    if [ ! -f "$project_dir/config.yaml" ]; then
+        warning "El archivo config.yaml no existe."
+        if [ -f "$project_dir/config.yaml.example" ]; then
+            info "Copiando config.yaml.example a config.yaml..."
+            cp "$project_dir/config.yaml.example" "$project_dir/config.yaml"
+            warning "Por favor, edita config.yaml con tus configuraciones antes de ejecutar el sniffer."
+        else
+            error "No se encontró config.yaml ni config.yaml.example"
+            exit 1
+        fi
+    fi
+    
+    # Verificar que el virtualenv funciona correctamente
+    info "Verificando que el virtualenv funciona..."
+    local venv_python="$venv_dir/bin/python3"
+    
+    if [ ! -f "$venv_python" ]; then
+        error "Python del virtualenv no encontrado en $venv_python"
+        exit 1
+    fi
+    
+    # Verificar que puede importar los módulos principales
+    info "Verificando que los módulos se pueden importar..."
+    if ! "$venv_python" -c "import sys; sys.path.insert(0, '$project_dir'); from dns_sniffer import DNSSniffer; from redis_client import DNSRedisClient; from clickhouse_client import DNSClickHouseClient; print('OK')" 2>/dev/null; then
+        warning "No se pudieron importar todos los módulos. Esto puede ser normal si faltan dependencias del sistema."
+        warning "Continuando con la instalación del servicio systemd..."
+    else
+        success "Módulos verificados correctamente"
+    fi
+    
+    # Verificar que el script se puede ejecutar (al menos verificar sintaxis)
+    info "Verificando sintaxis del script principal..."
+    if ! "$venv_python" -m py_compile "$project_dir/main.py" 2>/dev/null; then
+        warning "Advertencia al verificar sintaxis de main.py, pero continuando..."
+    else
+        success "Sintaxis del script verificada"
+    fi
+    
+    # Crear script wrapper para ejecutar el sniffer fácilmente
+    local sniffer_script="$project_dir/run_sniffer.sh"
+    if [ ! -f "$sniffer_script" ]; then
+        info "Creando script wrapper run_sniffer.sh..."
+        cat > "$sniffer_script" << 'EOFWRAPPER'
+#!/bin/bash
+# Script wrapper para ejecutar el sniffer usando el virtualenv
+
+# Obtener el directorio del script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_DIR="$SCRIPT_DIR/venv"
+PYTHON_BIN="$VENV_DIR/bin/python3"
+
+# Verificar que el virtualenv existe
+if [ ! -f "$PYTHON_BIN" ]; then
+    echo "Error: Virtualenv no encontrado. Ejecuta './deploy.sh sniffer' primero."
+    exit 1
+fi
+
+# Ejecutar el sniffer con el Python del virtualenv
+cd "$SCRIPT_DIR"
+exec "$PYTHON_BIN" main.py "$@"
+EOFWRAPPER
+        chmod +x "$sniffer_script"
+        success "Script wrapper creado: $sniffer_script"
+    fi
+    
+    # Crear servicio systemd
+    info "Creando servicio systemd..."
+    local service_file="$project_dir/dns-sniffer.service"
+    local systemd_service="/etc/systemd/system/dns-sniffer.service"
+    
+    # Obtener el usuario actual (para el servicio, aunque necesitará root para capturar paquetes)
+    local current_user="${SUDO_USER:-$USER}"
+    local current_group=$(id -gn "$current_user" 2>/dev/null || echo "$current_user")
+    
+    # Crear el archivo de servicio
+    cat > "$service_file" << EOF
+[Unit]
+Description=DNS Monitor Sniffer
+After=network.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Group=root
+WorkingDirectory=$project_dir
+Environment="PATH=$venv_dir/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=$venv_python $project_dir/main.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dns-sniffer
+
+# Seguridad: limitar capacidades
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
+NoNewPrivileges=true
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    success "Archivo de servicio creado: $service_file"
+    
+    # Copiar a systemd (requiere sudo)
+    if [ "$EUID" -eq 0 ]; then
+        info "Copiando servicio a systemd..."
+        if [ -f "$systemd_service" ]; then
+            warning "El servicio ya existe en systemd. Actualizándolo..."
+        fi
+        cp "$service_file" "$systemd_service"
+        chmod 644 "$systemd_service"
+        success "Servicio copiado a $systemd_service"
+        
+        info "Recargando systemd..."
+        systemctl daemon-reload
+        success "Systemd recargado"
+    else
+        if [ -f "$systemd_service" ]; then
+            info "El servicio ya está instalado en systemd."
+        else
+            warning "Se requieren permisos de administrador para instalar el servicio systemd."
+            info "Ejecuta los siguientes comandos con sudo:"
+            echo ""
+            echo "  sudo cp $service_file $systemd_service"
+            echo "  sudo chmod 644 $systemd_service"
+            echo "  sudo systemctl daemon-reload"
+            echo ""
+        fi
+    fi
+    
+    success "Sniffer instalado correctamente"
+    info "Virtualenv ubicado en: $venv_dir"
+    info ""
+    info "Para ejecutar el sniffer, usa una de estas opciones:"
+    info "  1. Script wrapper: sudo ./run_sniffer.sh"
+    info "  2. Directamente:   sudo $venv_dir/bin/python3 main.py"
+    info "  3. Activar venv:   source $venv_dir/bin/activate && sudo python3 main.py"
+    info ""
+    
+    if [ -f "$systemd_service" ]; then
+        info "Servicio systemd instalado: dns-sniffer.service"
+        info ""
+        warning "El servicio NO está habilitado para arrancar automáticamente."
+        info "Para habilitar el arranque automático, ejecuta:"
+        info "  sudo systemctl enable dns-sniffer.service"
+        info ""
+        info "Comandos útiles del servicio:"
+        info "  sudo systemctl start dns-sniffer    # Iniciar el servicio"
+        info "  sudo systemctl stop dns-sniffer     # Detener el servicio"
+        info "  sudo systemctl status dns-sniffer   # Ver estado"
+        info "  sudo journalctl -u dns-sniffer -f   # Ver logs en tiempo real"
+    else
+        info "Servicio systemd preparado en: $service_file"
+        info ""
+        info "Para instalar el servicio systemd, ejecuta:"
+        echo ""
+        echo "  sudo cp $service_file $systemd_service"
+        echo "  sudo chmod 644 $systemd_service"
+        echo "  sudo systemctl daemon-reload"
+        echo ""
+        info "Después de instalarlo, para habilitar el arranque automático:"
+        info "  sudo systemctl enable dns-sniffer.service"
+    fi
+    
+    info ""
+    info "NOTA: El sniffer requiere permisos de administrador para capturar paquetes de red."
+}
+
 # Función para instalar todos los componentes
 install_all() {
     info "Instalando todos los componentes..."
@@ -225,6 +492,7 @@ install_all() {
 stop_services() {
     info "Deteniendo servicios..."
     
+    # Detener servicios Docker
     if [ -f docker-compose.yml ]; then
         $DOCKER_COMPOSE_CMD -f docker-compose.yml down 2>/dev/null || true
     fi
@@ -233,6 +501,35 @@ stop_services() {
     fi
     if [ -f docker-compose.clickhouse.yml ]; then
         $DOCKER_COMPOSE_CMD -f docker-compose.clickhouse.yml down 2>/dev/null || true
+    fi
+    
+    # Detener sniffer si está corriendo
+    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    
+    # Detener servicio systemd si existe y está corriendo
+    if systemctl is-active --quiet dns-sniffer.service 2>/dev/null; then
+        info "Deteniendo servicio systemd dns-sniffer..."
+        if [ "$EUID" -eq 0 ]; then
+            systemctl stop dns-sniffer.service
+            success "Servicio systemd detenido"
+        else
+            warning "Se requieren permisos de administrador para detener el servicio systemd."
+            info "Ejecuta: sudo systemctl stop dns-sniffer.service"
+        fi
+    fi
+    
+    # Detener procesos manuales del sniffer
+    if pgrep -f "python3.*main.py" > /dev/null || pgrep -f "$project_dir/venv/bin/python3.*main.py" > /dev/null || pgrep -f "run_sniffer.sh" > /dev/null; then
+        info "Deteniendo procesos del sniffer..."
+        pkill -f "python3.*main.py" || true
+        pkill -f "$project_dir/venv/bin/python3.*main.py" || true
+        pkill -f "run_sniffer.sh" || true
+        sleep 2
+        if pgrep -f "python3.*main.py" > /dev/null || pgrep -f "$project_dir/venv/bin/python3.*main.py" > /dev/null || pgrep -f "run_sniffer.sh" > /dev/null; then
+            warning "Algunos procesos del sniffer no se detuvieron automáticamente. Puede requerir permisos de administrador."
+        else
+            success "Procesos del sniffer detenidos"
+        fi
     fi
     
     success "Servicios detenidos"
@@ -251,10 +548,52 @@ show_status() {
     info "Estado de los servicios:"
     echo ""
     
+    # Mostrar servicios Docker
     if docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "dns-monitor|NAMES"; then
         docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "dns-monitor|NAMES"
     else
-        warning "No hay servicios DNS Monitor corriendo"
+        warning "No hay servicios Docker DNS Monitor corriendo"
+    fi
+    
+    echo ""
+    # Mostrar estado del sniffer
+    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    
+    # Verificar servicio systemd
+    if systemctl list-unit-files | grep -q "dns-sniffer.service"; then
+        if systemctl is-active --quiet dns-sniffer.service 2>/dev/null; then
+            success "Sniffer (systemd): ACTIVO"
+            if [ "$EUID" -eq 0 ]; then
+                systemctl status dns-sniffer.service --no-pager -l | head -n 5
+            else
+                info "  Ejecuta 'sudo systemctl status dns-sniffer' para más detalles"
+            fi
+        elif systemctl is-enabled --quiet dns-sniffer.service 2>/dev/null; then
+            warning "Sniffer (systemd): HABILITADO pero no corriendo"
+            info "  Ejecuta 'sudo systemctl start dns-sniffer' para iniciarlo"
+        else
+            info "Sniffer (systemd): Servicio disponible pero no habilitado"
+            info "  Ejecuta 'sudo systemctl enable dns-sniffer' para habilitar arranque automático"
+        fi
+    fi
+    
+    # Verificar procesos manuales
+    local sniffer_pid=$(pgrep -f "python3.*main.py" | head -n1)
+    if [ -z "$sniffer_pid" ]; then
+        sniffer_pid=$(pgrep -f "$project_dir/venv/bin/python3.*main.py" | head -n1)
+    fi
+    if [ -z "$sniffer_pid" ]; then
+        sniffer_pid=$(pgrep -f "run_sniffer.sh" | head -n1)
+    fi
+    
+    if [ -n "$sniffer_pid" ]; then
+        success "Sniffer (proceso manual) está corriendo (PID: $sniffer_pid)"
+    elif ! systemctl is-active --quiet dns-sniffer.service 2>/dev/null; then
+        warning "Sniffer no está corriendo"
+    fi
+    
+    if [ -d "$project_dir/venv" ]; then
+        info "  Virtualenv: $project_dir/venv"
     fi
 }
 
@@ -277,9 +616,36 @@ show_logs() {
             dashboard)
                 docker logs -f dns-monitor-dashboard
                 ;;
+            sniffer)
+                local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+                
+                # Si está corriendo como servicio systemd, mostrar logs del journal
+                if systemctl is-active --quiet dns-sniffer.service 2>/dev/null; then
+                    info "Mostrando logs del servicio systemd dns-sniffer (Ctrl+C para salir)..."
+                    if [ "$EUID" -eq 0 ]; then
+                        journalctl -u dns-sniffer.service -f
+                    else
+                        warning "Se requieren permisos de administrador para ver logs del servicio systemd."
+                        info "Ejecuta: sudo journalctl -u dns-sniffer.service -f"
+                    fi
+                elif pgrep -f "python3.*main.py" > /dev/null || pgrep -f "$project_dir/venv/bin/python3.*main.py" > /dev/null || pgrep -f "run_sniffer.sh" > /dev/null; then
+                    info "El sniffer está corriendo como proceso manual."
+                    warning "Los logs están en la terminal donde se ejecutó."
+                    info "Para ver logs del servicio systemd (si está instalado):"
+                    info "  sudo journalctl -u dns-sniffer.service -f"
+                    info "Para ejecutar en foreground y ver logs: sudo ./run_sniffer.sh"
+                else
+                    warning "El sniffer no está corriendo"
+                    if systemctl list-unit-files | grep -q "dns-sniffer.service"; then
+                        info "Para iniciar el servicio: sudo systemctl start dns-sniffer"
+                    else
+                        info "Para ejecutarlo: sudo ./run_sniffer.sh"
+                    fi
+                fi
+                ;;
             *)
                 error "Servicio desconocido: $service"
-                info "Servicios disponibles: redis, clickhouse, dashboard"
+                info "Servicios disponibles: redis, clickhouse, dashboard, sniffer"
                 exit 1
                 ;;
         esac
@@ -312,6 +678,23 @@ clean_all() {
         rm -rf data/
     fi
     
+    # Preguntar si también eliminar el virtualenv
+    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    if [ -d "$project_dir/venv" ]; then
+        read -p "¿También eliminar el virtualenv? (escribe 'si' para confirmar): " clean_venv
+        if [ "$clean_venv" == "si" ]; then
+            warning "Eliminando virtualenv..."
+            rm -rf "$project_dir/venv"
+            success "Virtualenv eliminado"
+            
+            # También eliminar el script wrapper si existe
+            if [ -f "$project_dir/run_sniffer.sh" ]; then
+                rm -f "$project_dir/run_sniffer.sh"
+                info "Script wrapper eliminado"
+            fi
+        fi
+    fi
+    
     success "Limpieza completada"
 }
 
@@ -325,6 +708,9 @@ case "${1:-help}" in
         ;;
     dashboard)
         install_dashboard
+        ;;
+    sniffer)
+        install_sniffer
         ;;
     all)
         install_all
