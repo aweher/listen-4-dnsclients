@@ -49,6 +49,8 @@ class DNSClickHouseClient:
             password: Contraseña de ClickHouse (opcional)
         """
         try:
+            # Guardar el nombre de la base de datos como atributo de la clase
+            self.database = database
             self.client = Client(
                 host=host,
                 port=port,
@@ -72,7 +74,8 @@ class DNSClickHouseClient:
         """Crea la base de datos y tabla si no existen"""
         try:
             # Crear base de datos si no existe
-            self.client.execute(f'CREATE DATABASE IF NOT EXISTS {self.client.database}')
+            # Usar el atributo database de la clase, no del cliente
+            self.client.execute(f'CREATE DATABASE IF NOT EXISTS `{self.database}`')
             
             # Crear tabla para almacenar paquetes DNS
             create_table_query = """

@@ -34,7 +34,15 @@ Sistema de monitoreo pasivo de consultas DNS que captura tráfico DNS en tiempo 
 pip install -r requirements.txt
 ```
 
-3. Asegurarse de que Redis esté ejecutándose:
+3. Configurar `config.yaml`:
+```bash
+cp config.yaml.example config.yaml
+# Editar config.yaml con tus configuraciones
+# ⚠️ IMPORTANTE: Si el sniffer corre fuera de Docker, usa "localhost" 
+#    para Redis y ClickHouse, no los nombres de servicios Docker
+```
+
+4. Asegurarse de que Redis esté ejecutándose:
 
 **Opción A: Usando Docker Compose (recomendado)**
 ```bash
@@ -54,6 +62,8 @@ redis-server
 ```
 
 ## Uso
+
+> **📖 Para un ejemplo completo de puesta en marcha, consulta [EJEMPLO_PUESTA_EN_MARCHA.md](EJEMPLO_PUESTA_EN_MARCHA.md)**
 
 ### 0. Iniciar Redis con Docker Compose
 

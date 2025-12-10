@@ -134,6 +134,46 @@ create_data_directories() {
     success "Directorios creados"
 }
 
+# Función para verificar y crear config.yaml si es necesario
+check_and_create_config() {
+    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local config_file="$project_dir/config.yaml"
+    local config_example="$project_dir/config.yaml.example"
+    
+    if [ ! -f "$config_file" ]; then
+        warning "El archivo config.yaml no existe."
+        
+        if [ -f "$config_example" ]; then
+            echo ""
+            info "Se encontró config.yaml.example. Puedes crear config.yaml desde este archivo."
+            read -p "¿Deseas crear config.yaml desde config.yaml.example? (s/n): " create_config
+            echo ""
+            
+            # Normalizar respuesta (aceptar s, S, si, Si, SI, y, Y, yes, Yes, YES)
+            create_config=$(echo "$create_config" | tr '[:upper:]' '[:lower:]')
+            if [ "$create_config" = "s" ] || [ "$create_config" = "si" ] || [ "$create_config" = "y" ] || [ "$create_config" = "yes" ]; then
+                info "Copiando config.yaml.example a config.yaml..."
+                cp "$config_example" "$config_file"
+                success "Archivo config.yaml creado"
+                warning "Por favor, edita config.yaml con tus configuraciones antes de continuar."
+                info "Puedes editarlo con: nano $config_file"
+                return 0
+            else
+                warning "No se creó config.yaml."
+                info "Debes crear config.yaml manualmente antes de continuar."
+                info "Puedes copiarlo manualmente con: cp $config_example $config_file"
+                return 1
+            fi
+        else
+            error "No se encontró config.yaml ni config.yaml.example"
+            error "No se puede continuar sin un archivo de configuración."
+            return 1
+        fi
+    fi
+    
+    return 0
+}
+
 # Función para instalar Redis
 install_redis() {
     info "Instalando Redis..."
@@ -203,8 +243,124 @@ install_dashboard() {
     info "Esperando a que Dashboard esté listo..."
     sleep 5
     
-    success "Dashboard instalado y funcionando correctamente"
+    success "Dashboard instalado y funcionando correctamente (Docker)"
     info "Dashboard está disponible en http://localhost:8501"
+    
+    # Generar también el servicio systemd para ejecución sin Docker
+    info "Generando servicio systemd para dashboard..."
+    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+    local service_file="$project_dir/dashboard.service"
+    local systemd_service="/etc/systemd/system/dns-dashboard.service"
+    
+    # Detectar ruta de streamlit
+    local streamlit_path
+    if command -v streamlit &> /dev/null; then
+        streamlit_path=$(command -v streamlit)
+    elif command -v python3 &> /dev/null && python3 -c "import streamlit" 2>/dev/null; then
+        # Si streamlit está instalado pero no en PATH, usar python3 -m streamlit
+        streamlit_path="python3 -m streamlit"
+    else
+        # Si no se encuentra, usar el comando genérico (se intentará instalar o dará error)
+        streamlit_path="streamlit"
+        warning "Streamlit no encontrado. Asegúrate de tener Streamlit instalado."
+        warning "Puedes instalarlo con: pip3 install streamlit"
+    fi
+    
+    # Detectar usuario y grupo actual
+    local current_user="${SUDO_USER:-$USER}"
+    local current_group=$(id -gn "$current_user" 2>/dev/null || echo "$current_user")
+    
+    # Si no se puede determinar el grupo, usar el mismo que el usuario
+    if [ -z "$current_group" ]; then
+        current_group="$current_user"
+    fi
+    
+    # Determinar PATH para el servicio (incluir venv si existe)
+    local service_path="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
+    if [ -d "$project_dir/venv/bin" ]; then
+        service_path="$project_dir/venv/bin:$service_path"
+    fi
+    
+    # Crear el archivo de servicio
+    cat > "$service_file" << EOF
+[Unit]
+Description=DNS Monitor Dashboard (Streamlit)
+After=network.target redis.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=$current_user
+Group=$current_group
+WorkingDirectory=$project_dir
+Environment="PATH=$service_path"
+ExecStart=$streamlit_path run $project_dir/dashboard.py --server.headless=true --server.address=0.0.0.0 --server.port=8501 --browser.gatherUsageStats=false --server.enableXsrfProtection=true
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=dns-dashboard
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    success "Archivo de servicio creado: $service_file"
+    
+    # Copiar a systemd (requiere sudo)
+    if [ "$EUID" -eq 0 ]; then
+        info "Copiando servicio a systemd..."
+        if [ -f "$systemd_service" ]; then
+            warning "El servicio ya existe en systemd. Actualizándolo..."
+        fi
+        cp "$service_file" "$systemd_service"
+        chmod 644 "$systemd_service"
+        success "Servicio copiado a $systemd_service"
+        
+        info "Recargando systemd..."
+        systemctl daemon-reload
+        success "Systemd recargado"
+    else
+        if [ -f "$systemd_service" ]; then
+            info "El servicio ya está instalado en systemd."
+        else
+            warning "Se requieren permisos de administrador para instalar el servicio systemd."
+            info "Ejecuta los siguientes comandos con sudo:"
+            echo ""
+            echo "  sudo cp $service_file $systemd_service"
+            echo "  sudo chmod 644 $systemd_service"
+            echo "  sudo systemctl daemon-reload"
+            echo ""
+        fi
+    fi
+    
+    if [ -f "$systemd_service" ]; then
+        info "Servicio systemd instalado: dns-dashboard.service"
+        info ""
+        warning "El servicio NO está habilitado para arrancar automáticamente."
+        info "Para habilitar el arranque automático, ejecuta:"
+        info "  sudo systemctl enable dns-dashboard.service"
+        info ""
+        info "Comandos útiles del servicio:"
+        info "  sudo systemctl start dns-dashboard    # Iniciar el servicio"
+        info "  sudo systemctl stop dns-dashboard     # Detener el servicio"
+        info "  sudo systemctl status dns-dashboard   # Ver estado"
+        info "  sudo journalctl -u dns-dashboard -f   # Ver logs en tiempo real"
+        info ""
+        info "NOTA: El servicio systemd ejecuta el dashboard directamente (sin Docker)."
+        info "      Asegúrate de tener Python y Streamlit instalados en el sistema."
+    else
+        info "Servicio systemd preparado en: $service_file"
+        info ""
+        info "Para instalar el servicio systemd, ejecuta:"
+        echo ""
+        echo "  sudo cp $service_file $systemd_service"
+        echo "  sudo chmod 644 $systemd_service"
+        echo "  sudo systemctl daemon-reload"
+        echo ""
+        info "Después de instalarlo, para habilitar el arranque automático:"
+        info "  sudo systemctl enable dns-dashboard.service"
+    fi
 }
 
 # Función para instalar Sniffer
@@ -282,16 +438,9 @@ install_sniffer() {
     fi
     
     # Verificar que config.yaml existe
-    if [ ! -f "$project_dir/config.yaml" ]; then
-        warning "El archivo config.yaml no existe."
-        if [ -f "$project_dir/config.yaml.example" ]; then
-            info "Copiando config.yaml.example a config.yaml..."
-            cp "$project_dir/config.yaml.example" "$project_dir/config.yaml"
-            warning "Por favor, edita config.yaml con tus configuraciones antes de ejecutar el sniffer."
-        else
-            error "No se encontró config.yaml ni config.yaml.example"
-            exit 1
-        fi
+    if ! check_and_create_config; then
+        error "No se puede continuar sin config.yaml"
+        exit 1
     fi
     
     # Verificar que el virtualenv funciona correctamente
@@ -503,6 +652,18 @@ stop_services() {
         $DOCKER_COMPOSE_CMD -f docker-compose.clickhouse.yml down 2>/dev/null || true
     fi
     
+    # Detener servicio systemd del dashboard si existe y está corriendo
+    if systemctl is-active --quiet dns-dashboard.service 2>/dev/null; then
+        info "Deteniendo servicio systemd dns-dashboard..."
+        if [ "$EUID" -eq 0 ]; then
+            systemctl stop dns-dashboard.service
+            success "Servicio systemd del dashboard detenido"
+        else
+            warning "Se requieren permisos de administrador para detener el servicio systemd."
+            info "Ejecuta: sudo systemctl stop dns-dashboard.service"
+        fi
+    fi
+    
     # Detener sniffer si está corriendo
     local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
     
@@ -553,6 +714,25 @@ show_status() {
         docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "dns-monitor|NAMES"
     else
         warning "No hay servicios Docker DNS Monitor corriendo"
+    fi
+    
+    echo ""
+    # Mostrar estado del dashboard (systemd)
+    if systemctl list-unit-files | grep -q "dns-dashboard.service"; then
+        if systemctl is-active --quiet dns-dashboard.service 2>/dev/null; then
+            success "Dashboard (systemd): ACTIVO"
+            if [ "$EUID" -eq 0 ]; then
+                systemctl status dns-dashboard.service --no-pager -l | head -n 5
+            else
+                info "  Ejecuta 'sudo systemctl status dns-dashboard' para más detalles"
+            fi
+        elif systemctl is-enabled --quiet dns-dashboard.service 2>/dev/null; then
+            warning "Dashboard (systemd): HABILITADO pero no corriendo"
+            info "  Ejecuta 'sudo systemctl start dns-dashboard' para iniciarlo"
+        else
+            info "Dashboard (systemd): Servicio disponible pero no habilitado"
+            info "  Ejecuta 'sudo systemctl enable dns-dashboard' para habilitar arranque automático"
+        fi
     fi
     
     echo ""
@@ -614,7 +794,28 @@ show_logs() {
                 docker logs -f dns-monitor-clickhouse
                 ;;
             dashboard)
-                docker logs -f dns-monitor-dashboard
+                # Si está corriendo como servicio systemd, mostrar logs del journal
+                if systemctl is-active --quiet dns-dashboard.service 2>/dev/null; then
+                    info "Mostrando logs del servicio systemd dns-dashboard (Ctrl+C para salir)..."
+                    if [ "$EUID" -eq 0 ]; then
+                        journalctl -u dns-dashboard.service -f
+                    else
+                        warning "Se requieren permisos de administrador para ver logs del servicio systemd."
+                        info "Ejecuta: sudo journalctl -u dns-dashboard.service -f"
+                    fi
+                elif docker ps | grep -q dns-monitor-dashboard; then
+                    # Si está corriendo en Docker, mostrar logs de Docker
+                    docker logs -f dns-monitor-dashboard
+                else
+                    warning "El dashboard no está corriendo"
+                    if systemctl list-unit-files | grep -q "dns-dashboard.service"; then
+                        info "Para iniciar el servicio: sudo systemctl start dns-dashboard"
+                    elif docker ps -a | grep -q dns-monitor-dashboard; then
+                        info "Para iniciar en Docker: docker start dns-monitor-dashboard"
+                    else
+                        info "Para iniciar: ./deploy.sh dashboard"
+                    fi
+                fi
                 ;;
             sniffer)
                 local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
