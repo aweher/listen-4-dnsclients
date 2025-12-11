@@ -131,7 +131,9 @@ services:
       - "8501:8501"
     volumes:
       # Montar config.yaml como volumen para poder editarlo sin reconstruir
-      # Si no existe config.yaml localmente, comenta esta línea y el contenedor creará uno por defecto
+      # IMPORTANTE: Si config.yaml no existe, Docker creará un DIRECTORIO en su lugar.
+      # Asegúrate de que config.yaml existe como ARCHIVO antes de iniciar el servicio.
+      # El script deploy.sh valida esto automáticamente.
       - ./config.yaml:/app/config.yaml
     environment:
       # Configuración de Redis (se conecta al servicio redis del docker-compose)

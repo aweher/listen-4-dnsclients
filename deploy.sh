@@ -22,7 +22,10 @@
 # Script de despliegue modular para DNS Monitor
 # Permite instalar componentes por separado o todos juntos
 
-set -e
+set -eu
+
+# Obtener directorio del proyecto una sola vez
+PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
 # Colores para output
 RED='\033[0;31m'
@@ -66,6 +69,7 @@ OPCIONES:
     status         Mostrar estado de los servicios
     logs           Mostrar logs de los servicios
     clean          Eliminar contenedores y volúmenes (¡CUIDADO: elimina datos!)
+    fix-config     Reparar config.yaml si existe como directorio (error común de Docker)
     help           Mostrar esta ayuda
 
 EJEMPLOS:
@@ -136,39 +140,117 @@ create_data_directories() {
 
 # Función para verificar y crear config.yaml si es necesario
 check_and_create_config() {
-    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local config_file="$project_dir/config.yaml"
-    local config_example="$project_dir/config.yaml.example"
+    local config_file="$PROJECT_DIR/config.yaml"
+    local config_file_alt="$PROJECT_DIR/config.yml"
+    local config_example="$PROJECT_DIR/config.yaml.example"
     
-    if [ ! -f "$config_file" ]; then
-        warning "El archivo config.yaml no existe."
+    # Verificar si existe como directorio (error común de Docker)
+    if [ -d "$config_file" ]; then
+        error "ERROR: config.yaml existe como DIRECTORIO, no como archivo."
+        error "Esto suele ocurrir cuando Docker monta un archivo inexistente."
+        error "Elimina el directorio y crea el archivo:"
+        error "  rm -rf $config_file"
+        error "  cp $config_example $config_file"
+        return 1
+    fi
+    
+    if [ -d "$config_file_alt" ]; then
+        error "ERROR: config.yml existe como DIRECTORIO, no como archivo."
+        error "Esto suele ocurrir cuando Docker monta un archivo inexistente."
+        error "Elimina el directorio y crea el archivo:"
+        error "  rm -rf $config_file_alt"
+        error "  cp $config_example $config_file_alt"
+        return 1
+    fi
+    
+    # Verificar si existe como archivo
+    if [ -f "$config_file" ] || [ -f "$config_file_alt" ]; then
+        return 0
+    fi
+    
+    # Si no existe, intentar crearlo
+    warning "El archivo config.yaml no existe."
+    
+    if [ -f "$config_example" ]; then
+        echo ""
+        info "Se encontró config.yaml.example. Puedes crear config.yaml desde este archivo."
+        read -p "¿Deseas crear config.yaml desde config.yaml.example? (s/n): " create_config
+        echo ""
         
-        if [ -f "$config_example" ]; then
-            echo ""
-            info "Se encontró config.yaml.example. Puedes crear config.yaml desde este archivo."
-            read -p "¿Deseas crear config.yaml desde config.yaml.example? (s/n): " create_config
-            echo ""
-            
-            # Normalizar respuesta (aceptar s, S, si, Si, SI, y, Y, yes, Yes, YES)
-            create_config=$(echo "$create_config" | tr '[:upper:]' '[:lower:]')
-            if [ "$create_config" = "s" ] || [ "$create_config" = "si" ] || [ "$create_config" = "y" ] || [ "$create_config" = "yes" ]; then
-                info "Copiando config.yaml.example a config.yaml..."
-                cp "$config_example" "$config_file"
-                success "Archivo config.yaml creado"
-                warning "Por favor, edita config.yaml con tus configuraciones antes de continuar."
-                info "Puedes editarlo con: nano $config_file"
-                return 0
-            else
-                warning "No se creó config.yaml."
-                info "Debes crear config.yaml manualmente antes de continuar."
-                info "Puedes copiarlo manualmente con: cp $config_example $config_file"
-                return 1
-            fi
+        # Normalizar respuesta (aceptar s, S, si, Si, SI, y, Y, yes, Yes, YES)
+        create_config=$(echo "$create_config" | tr '[:upper:]' '[:lower:]')
+        if [ "$create_config" = "s" ] || [ "$create_config" = "si" ] || [ "$create_config" = "y" ] || [ "$create_config" = "yes" ]; then
+            info "Copiando config.yaml.example a config.yaml..."
+            cp "$config_example" "$config_file"
+            success "Archivo config.yaml creado"
+            warning "Por favor, edita config.yaml con tus configuraciones antes de continuar."
+            info "Puedes editarlo con: nano $config_file"
+            return 0
         else
-            error "No se encontró config.yaml ni config.yaml.example"
-            error "No se puede continuar sin un archivo de configuración."
+            warning "No se creó config.yaml."
+            info "Debes crear config.yaml manualmente antes de continuar."
+            info "Puedes copiarlo manualmente con: cp $config_example $config_file"
             return 1
         fi
+    else
+        error "No se encontró config.yaml ni config.yaml.example"
+        error "No se puede continuar sin un archivo de configuración."
+        return 1
+    fi
+}
+
+# Función para validar que config.yaml existe y es un archivo (no directorio) antes de montar en Docker
+validate_config_file_for_docker() {
+    local config_file="$PROJECT_DIR/config.yaml"
+    local config_file_alt="$PROJECT_DIR/config.yml"
+    local config_example="$PROJECT_DIR/config.yaml.example"
+    
+    # Verificar si existe como directorio (error común de Docker)
+    if [ -d "$config_file" ]; then
+        error "ERROR CRÍTICO: config.yaml existe como DIRECTORIO, no como archivo."
+        error "Esto ocurre cuando Docker monta un archivo inexistente y crea un directorio."
+        error ""
+        error "Solución:"
+        error "  1. Detén los contenedores: ./deploy.sh stop"
+        error "  2. Elimina el directorio: rm -rf $config_file"
+        if [ -f "$config_example" ]; then
+            error "  3. Crea el archivo: cp $config_example $config_file"
+        else
+            error "  3. Crea el archivo config.yaml manualmente"
+        fi
+        error "  4. Vuelve a intentar: ./deploy.sh dashboard"
+        return 1
+    fi
+    
+    if [ -d "$config_file_alt" ]; then
+        error "ERROR CRÍTICO: config.yml existe como DIRECTORIO, no como archivo."
+        error "Esto ocurre cuando Docker monta un archivo inexistente y crea un directorio."
+        error ""
+        error "Solución:"
+        error "  1. Detén los contenedores: ./deploy.sh stop"
+        error "  2. Elimina el directorio: rm -rf $config_file_alt"
+        if [ -f "$config_example" ]; then
+            error "  3. Crea el archivo: cp $config_example $config_file_alt"
+        else
+            error "  3. Crea el archivo config.yml manualmente"
+        fi
+        error "  4. Vuelve a intentar: ./deploy.sh dashboard"
+        return 1
+    fi
+    
+    # Verificar que existe como archivo
+    if [ ! -f "$config_file" ] && [ ! -f "$config_file_alt" ]; then
+        error "ERROR: El archivo config.yaml o config.yml no existe."
+        error "Docker no puede montar un archivo que no existe (crearía un directorio)."
+        error ""
+        if [ -f "$config_example" ]; then
+            error "Solución:"
+            error "  cp $config_example $config_file"
+            error "  # Luego edita config.yaml con tus configuraciones"
+        else
+            error "Crea el archivo config.yaml manualmente antes de continuar."
+        fi
+        return 1
     fi
     
     return 0
@@ -227,6 +309,12 @@ install_dashboard() {
     info "Instalando Dashboard..."
     check_dependencies
     
+    # Verificar que config.yaml existe y es un archivo (no directorio) antes de montar en Docker
+    if ! validate_config_file_for_docker; then
+        error "No se puede continuar sin un archivo de configuración válido"
+        exit 1
+    fi
+    
     # Verificar que config.yaml existe (necesario para el dashboard)
     if ! check_and_create_config; then
         error "No se puede continuar sin config.yaml"
@@ -254,8 +342,7 @@ install_dashboard() {
     
     # Generar también el servicio systemd para ejecución sin Docker
     info "Generando servicio systemd para dashboard..."
-    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local service_file="$project_dir/dashboard.service"
+    local service_file="$PROJECT_DIR/dashboard.service"
     local systemd_service="/etc/systemd/system/dns-dashboard.service"
     
     # Detectar ruta de streamlit
@@ -283,8 +370,8 @@ install_dashboard() {
     
     # Determinar PATH para el servicio (incluir venv si existe)
     local service_path="/usr/local/bin:/usr/local/sbin:/usr/bin:/usr/sbin:/bin:/sbin"
-    if [ -d "$project_dir/venv/bin" ]; then
-        service_path="$project_dir/venv/bin:$service_path"
+    if [ -d "$PROJECT_DIR/venv/bin" ]; then
+        service_path="$PROJECT_DIR/venv/bin:$service_path"
     fi
     
     # Crear el archivo de servicio
@@ -298,9 +385,9 @@ Wants=network-online.target
 Type=simple
 User=$current_user
 Group=$current_group
-WorkingDirectory=$project_dir
+WorkingDirectory=$PROJECT_DIR
 Environment="PATH=$service_path"
-ExecStart=$streamlit_path run $project_dir/dashboard.py --server.headless=true --server.address=0.0.0.0 --server.port=8501 --browser.gatherUsageStats=false --server.enableXsrfProtection=true
+ExecStart=$streamlit_path run $PROJECT_DIR/dashboard.py --server.headless=true --server.address=0.0.0.0 --server.port=8501 --browser.gatherUsageStats=false --server.enableXsrfProtection=true
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -369,42 +456,34 @@ EOF
     fi
 }
 
-# Función para instalar Sniffer
-install_sniffer() {
-    info "Instalando Sniffer..."
-    check_python_dependencies
-    
-    # Obtener el directorio del script (directorio del proyecto)
-    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local venv_dir="$project_dir/venv"
+# Función helper para configurar el entorno del sniffer (virtualenv y dependencias)
+setup_sniffer_environment() {
+    local venv_dir="$PROJECT_DIR/venv"
     
     # Verificar que main.py existe
-    if [ ! -f "$project_dir/main.py" ]; then
+    if [ ! -f "$PROJECT_DIR/main.py" ]; then
         error "El archivo main.py no existe en el directorio del proyecto."
-        exit 1
+        return 1
     fi
     
     # Verificar que requirements.txt existe
-    if [ ! -f "$project_dir/requirements.txt" ]; then
+    if [ ! -f "$PROJECT_DIR/requirements.txt" ]; then
         error "El archivo requirements.txt no existe en el directorio del proyecto."
-        exit 1
+        return 1
     fi
     
     # Crear directorio venv si no existe
     if [ ! -d "$venv_dir" ]; then
         info "Creando virtualenv en $venv_dir..."
         if command -v python3 &> /dev/null; then
-            python3 -m venv "$venv_dir"
-        else
-            error "No se pudo crear el virtualenv. Python3 no está disponible."
-            exit 1
-        fi
-        
-        if [ $? -eq 0 ]; then
+            if ! python3 -m venv "$venv_dir"; then
+                error "Error al crear el virtualenv"
+                return 1
+            fi
             success "Virtualenv creado en $venv_dir"
         else
-            error "Error al crear el virtualenv"
-            exit 1
+            error "No se pudo crear el virtualenv. Python3 no está disponible."
+            return 1
         fi
     else
         info "Virtualenv ya existe en $venv_dir"
@@ -429,24 +508,18 @@ install_sniffer() {
         venv_pip="$venv_dir/bin/pip"
     else
         error "No se encontró pip en el virtualenv"
-        exit 1
+        return 1
     fi
     
     # Instalar requerimientos
     "$venv_pip" install --upgrade pip
-    "$venv_pip" install -r "$project_dir/requirements.txt"
+    "$venv_pip" install -r "$PROJECT_DIR/requirements.txt"
     
     if [ $? -eq 0 ]; then
         success "Dependencias de Python instaladas correctamente en el virtualenv"
     else
         error "Error al instalar dependencias de Python"
-        exit 1
-    fi
-    
-    # Verificar que config.yaml existe
-    if ! check_and_create_config; then
-        error "No se puede continuar sin config.yaml"
-        exit 1
+        return 1
     fi
     
     # Verificar que el virtualenv funciona correctamente
@@ -455,12 +528,12 @@ install_sniffer() {
     
     if [ ! -f "$venv_python" ]; then
         error "Python del virtualenv no encontrado en $venv_python"
-        exit 1
+        return 1
     fi
     
     # Verificar que puede importar los módulos principales
     info "Verificando que los módulos se pueden importar..."
-    if ! "$venv_python" -c "import sys; sys.path.insert(0, '$project_dir'); from dns_sniffer import DNSSniffer; from redis_client import DNSRedisClient; from clickhouse_client import DNSClickHouseClient; print('OK')" 2>/dev/null; then
+    if ! "$venv_python" -c "import sys; sys.path.insert(0, '$PROJECT_DIR'); from dns_sniffer import DNSSniffer; from redis_client import DNSRedisClient; from clickhouse_client import DNSClickHouseClient; print('OK')" 2>/dev/null; then
         warning "No se pudieron importar todos los módulos. Esto puede ser normal si faltan dependencias del sistema."
         warning "Continuando con la instalación del servicio systemd..."
     else
@@ -469,14 +542,14 @@ install_sniffer() {
     
     # Verificar que el script se puede ejecutar (al menos verificar sintaxis)
     info "Verificando sintaxis del script principal..."
-    if ! "$venv_python" -m py_compile "$project_dir/main.py" 2>/dev/null; then
+    if ! "$venv_python" -m py_compile "$PROJECT_DIR/main.py" 2>/dev/null; then
         warning "Advertencia al verificar sintaxis de main.py, pero continuando..."
     else
         success "Sintaxis del script verificada"
     fi
     
     # Crear script wrapper para ejecutar el sniffer fácilmente
-    local sniffer_script="$project_dir/run_sniffer.sh"
+    local sniffer_script="$PROJECT_DIR/run_sniffer.sh"
     if [ ! -f "$sniffer_script" ]; then
         info "Creando script wrapper run_sniffer.sh..."
         cat > "$sniffer_script" << 'EOFWRAPPER'
@@ -502,14 +575,15 @@ EOFWRAPPER
         success "Script wrapper creado: $sniffer_script"
     fi
     
-    # Crear servicio systemd
-    info "Creando servicio systemd..."
-    local service_file="$project_dir/dns-sniffer.service"
+    return 0
+}
+
+# Función para crear el servicio systemd del sniffer
+create_sniffer_systemd_service() {
+    local venv_dir="$PROJECT_DIR/venv"
+    local venv_python="$venv_dir/bin/python3"
+    local service_file="$PROJECT_DIR/dns-sniffer.service"
     local systemd_service="/etc/systemd/system/dns-sniffer.service"
-    
-    # Obtener el usuario actual (para el servicio, aunque necesitará root para capturar paquetes)
-    local current_user="${SUDO_USER:-$USER}"
-    local current_group=$(id -gn "$current_user" 2>/dev/null || echo "$current_user")
     
     # Crear el archivo de servicio
     cat > "$service_file" << EOF
@@ -522,9 +596,9 @@ Wants=network-online.target
 Type=simple
 User=root
 Group=root
-WorkingDirectory=$project_dir
+WorkingDirectory=$PROJECT_DIR
 Environment="PATH=$venv_dir/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-ExecStart=$venv_python $project_dir/main.py
+ExecStart=$venv_python $PROJECT_DIR/main.py
 Restart=always
 RestartSec=10
 StandardOutput=journal
@@ -607,11 +681,136 @@ EOF
     info "NOTA: El sniffer requiere permisos de administrador para capturar paquetes de red."
 }
 
+# Función para instalar Sniffer
+install_sniffer() {
+    info "Instalando Sniffer..."
+    check_python_dependencies
+    
+    # Configurar entorno del sniffer
+    if ! setup_sniffer_environment; then
+        error "Error al configurar el entorno del sniffer"
+        exit 1
+    fi
+    
+    # Verificar que config.yaml existe
+    if ! check_and_create_config; then
+        error "No se puede continuar sin config.yaml"
+        exit 1
+    fi
+    
+    local venv_dir="$PROJECT_DIR/venv"
+    local venv_python="$venv_dir/bin/python3"
+    local sniffer_script="$PROJECT_DIR/run_sniffer.sh"
+    
+    # Crear script wrapper si no existe
+    if [ ! -f "$sniffer_script" ]; then
+        info "Creando script wrapper run_sniffer.sh..."
+        cat > "$sniffer_script" << 'EOFWRAPPER'
+#!/bin/bash
+# Script wrapper para ejecutar el sniffer usando el virtualenv
+
+# Obtener el directorio del script
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+VENV_DIR="$SCRIPT_DIR/venv"
+PYTHON_BIN="$VENV_DIR/bin/python3"
+
+# Verificar que el virtualenv existe
+if [ ! -f "$PYTHON_BIN" ]; then
+    echo "Error: Virtualenv no encontrado. Ejecuta './deploy.sh sniffer' primero."
+    exit 1
+fi
+
+# Ejecutar el sniffer con el Python del virtualenv
+cd "$SCRIPT_DIR"
+exec "$PYTHON_BIN" main.py "$@"
+EOFWRAPPER
+        chmod +x "$sniffer_script"
+        success "Script wrapper creado: $sniffer_script"
+    fi
+    
+    # Crear servicio systemd
+    info "Creando servicio systemd..."
+    create_sniffer_systemd_service
+    
+    local service_file="$PROJECT_DIR/dns-sniffer.service"
+    local systemd_service="/etc/systemd/system/dns-sniffer.service"
+    
+    # Copiar a systemd (requiere sudo)
+    if [ "$EUID" -eq 0 ]; then
+        info "Copiando servicio a systemd..."
+        if [ -f "$systemd_service" ]; then
+            warning "El servicio ya existe en systemd. Actualizándolo..."
+        fi
+        cp "$service_file" "$systemd_service"
+        chmod 644 "$systemd_service"
+        success "Servicio copiado a $systemd_service"
+        
+        info "Recargando systemd..."
+        systemctl daemon-reload
+        success "Systemd recargado"
+    else
+        if [ -f "$systemd_service" ]; then
+            info "El servicio ya está instalado en systemd."
+        else
+            warning "Se requieren permisos de administrador para instalar el servicio systemd."
+            info "Ejecuta los siguientes comandos con sudo:"
+            echo ""
+            echo "  sudo cp $service_file $systemd_service"
+            echo "  sudo chmod 644 $systemd_service"
+            echo "  sudo systemctl daemon-reload"
+            echo ""
+        fi
+    fi
+    
+    success "Sniffer instalado correctamente"
+    info "Virtualenv ubicado en: $venv_dir"
+    info ""
+    info "Para ejecutar el sniffer, usa una de estas opciones:"
+    info "  1. Script wrapper: sudo ./run_sniffer.sh"
+    info "  2. Directamente:   sudo $venv_dir/bin/python3 main.py"
+    info "  3. Activar venv:   source $venv_dir/bin/activate && sudo python3 main.py"
+    info ""
+    
+    if [ -f "$systemd_service" ]; then
+        info "Servicio systemd instalado: dns-sniffer.service"
+        info ""
+        warning "El servicio NO está habilitado para arrancar automáticamente."
+        info "Para habilitar el arranque automático, ejecuta:"
+        info "  sudo systemctl enable dns-sniffer.service"
+        info ""
+        info "Comandos útiles del servicio:"
+        info "  sudo systemctl start dns-sniffer    # Iniciar el servicio"
+        info "  sudo systemctl stop dns-sniffer     # Detener el servicio"
+        info "  sudo systemctl status dns-sniffer   # Ver estado"
+        info "  sudo journalctl -u dns-sniffer -f   # Ver logs en tiempo real"
+    else
+        info "Servicio systemd preparado en: $service_file"
+        info ""
+        info "Para instalar el servicio systemd, ejecuta:"
+        echo ""
+        echo "  sudo cp $service_file $systemd_service"
+        echo "  sudo chmod 644 $systemd_service"
+        echo "  sudo systemctl daemon-reload"
+        echo ""
+        info "Después de instalarlo, para habilitar el arranque automático:"
+        info "  sudo systemctl enable dns-sniffer.service"
+    fi
+    
+    info ""
+    info "NOTA: El sniffer requiere permisos de administrador para capturar paquetes de red."
+}
+
 # Función para instalar todos los componentes
 install_all() {
     info "Instalando todos los componentes..."
     check_dependencies
     create_data_directories
+    
+    # Verificar que config.yaml existe y es un archivo (no directorio) antes de montar en Docker
+    if ! validate_config_file_for_docker; then
+        error "No se puede continuar sin un archivo de configuración válido"
+        exit 1
+    fi
     
     # Verificar que config.yaml existe (necesario para dashboard y sniffer)
     if ! check_and_create_config; then
@@ -648,103 +847,17 @@ install_all() {
     info "Instalando sniffer..."
     check_python_dependencies
     
-    # Obtener el directorio del script (directorio del proyecto)
-    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    local venv_dir="$project_dir/venv"
-    
-    # Verificar que main.py existe
-    if [ ! -f "$project_dir/main.py" ]; then
-        error "El archivo main.py no existe en el directorio del proyecto."
+    # Configurar entorno del sniffer (reutilizando función común)
+    if ! setup_sniffer_environment; then
+        error "Error al configurar el entorno del sniffer"
         exit 1
     fi
     
-    # Verificar que requirements.txt existe
-    if [ ! -f "$project_dir/requirements.txt" ]; then
-        error "El archivo requirements.txt no existe en el directorio del proyecto."
-        exit 1
-    fi
-    
-    # Crear directorio venv si no existe
-    if [ ! -d "$venv_dir" ]; then
-        info "Creando virtualenv en $venv_dir..."
-        if command -v python3 &> /dev/null; then
-            python3 -m venv "$venv_dir"
-        else
-            error "No se pudo crear el virtualenv. Python3 no está disponible."
-            exit 1
-        fi
-        
-        if [ $? -eq 0 ]; then
-            success "Virtualenv creado en $venv_dir"
-        else
-            error "Error al crear el virtualenv"
-            exit 1
-        fi
-    else
-        info "Virtualenv ya existe en $venv_dir"
-    fi
-    
-    # Instalar dependencias en el virtualenv
-    info "Instalando dependencias de Python en el virtualenv..."
-    
-    # Verificar que el virtualenv tenga pip
-    if [ ! -f "$venv_dir/bin/pip" ] && [ ! -f "$venv_dir/bin/pip3" ]; then
-        info "Actualizando pip en el virtualenv..."
-        if [ -f "$venv_dir/bin/python3" ]; then
-            "$venv_dir/bin/python3" -m ensurepip --upgrade || "$venv_dir/bin/python3" -m pip install --upgrade pip
-        fi
-    fi
-    
-    # Determinar el comando pip del virtualenv
-    local venv_pip
-    if [ -f "$venv_dir/bin/pip3" ]; then
-        venv_pip="$venv_dir/bin/pip3"
-    elif [ -f "$venv_dir/bin/pip" ]; then
-        venv_pip="$venv_dir/bin/pip"
-    else
-        error "No se encontró pip en el virtualenv"
-        exit 1
-    fi
-    
-    # Instalar requerimientos
-    "$venv_pip" install --upgrade pip
-    "$venv_pip" install -r "$project_dir/requirements.txt"
-    
-    if [ $? -eq 0 ]; then
-        success "Dependencias de Python instaladas correctamente en el virtualenv"
-    else
-        error "Error al instalar dependencias de Python"
-        exit 1
-    fi
-    
-    # Verificar que el virtualenv funciona correctamente
-    info "Verificando que el virtualenv funciona..."
+    local venv_dir="$PROJECT_DIR/venv"
     local venv_python="$venv_dir/bin/python3"
+    local sniffer_script="$PROJECT_DIR/run_sniffer.sh"
     
-    if [ ! -f "$venv_python" ]; then
-        error "Python del virtualenv no encontrado en $venv_python"
-        exit 1
-    fi
-    
-    # Verificar que puede importar los módulos principales
-    info "Verificando que los módulos se pueden importar..."
-    if ! "$venv_python" -c "import sys; sys.path.insert(0, '$project_dir'); from dns_sniffer import DNSSniffer; from redis_client import DNSRedisClient; from clickhouse_client import DNSClickHouseClient; print('OK')" 2>/dev/null; then
-        warning "No se pudieron importar todos los módulos. Esto puede ser normal si faltan dependencias del sistema."
-        warning "Continuando con la instalación del servicio systemd..."
-    else
-        success "Módulos verificados correctamente"
-    fi
-    
-    # Verificar que el script se puede ejecutar (al menos verificar sintaxis)
-    info "Verificando sintaxis del script principal..."
-    if ! "$venv_python" -m py_compile "$project_dir/main.py" 2>/dev/null; then
-        warning "Advertencia al verificar sintaxis de main.py, pero continuando..."
-    else
-        success "Sintaxis del script verificada"
-    fi
-    
-    # Crear script wrapper para ejecutar el sniffer fácilmente
-    local sniffer_script="$project_dir/run_sniffer.sh"
+    # Crear script wrapper si no existe
     if [ ! -f "$sniffer_script" ]; then
         info "Creando script wrapper run_sniffer.sh..."
         cat > "$sniffer_script" << 'EOFWRAPPER'
@@ -772,39 +885,10 @@ EOFWRAPPER
     
     # Crear servicio systemd para el sniffer
     info "Creando servicio systemd para sniffer..."
-    local service_file="$project_dir/dns-sniffer.service"
+    create_sniffer_systemd_service
+    
+    local service_file="$PROJECT_DIR/dns-sniffer.service"
     local systemd_service="/etc/systemd/system/dns-sniffer.service"
-    
-    # Crear el archivo de servicio
-    cat > "$service_file" << EOF
-[Unit]
-Description=DNS Monitor Sniffer
-After=network.target
-Wants=network-online.target
-
-[Service]
-Type=simple
-User=root
-Group=root
-WorkingDirectory=$project_dir
-Environment="PATH=$venv_dir/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-ExecStart=$venv_python $project_dir/main.py
-Restart=always
-RestartSec=10
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=dns-sniffer
-
-# Seguridad: limitar capacidades
-CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
-AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN
-NoNewPrivileges=true
-
-[Install]
-WantedBy=multi-user.target
-EOF
-    
-    success "Archivo de servicio creado: $service_file"
     
     # Copiar a systemd (requiere sudo)
     if [ "$EUID" -eq 0 ]; then
@@ -882,8 +966,6 @@ stop_services() {
     fi
     
     # Detener sniffer si está corriendo
-    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    
     # Detener servicio systemd si existe y está corriendo
     if systemctl is-active --quiet dns-sniffer.service 2>/dev/null; then
         info "Deteniendo servicio systemd dns-sniffer..."
@@ -897,13 +979,13 @@ stop_services() {
     fi
     
     # Detener procesos manuales del sniffer
-    if pgrep -f "python3.*main.py" > /dev/null || pgrep -f "$project_dir/venv/bin/python3.*main.py" > /dev/null || pgrep -f "run_sniffer.sh" > /dev/null; then
+    if pgrep -f "python3.*main.py" > /dev/null || pgrep -f "$PROJECT_DIR/venv/bin/python3.*main.py" > /dev/null || pgrep -f "run_sniffer.sh" > /dev/null; then
         info "Deteniendo procesos del sniffer..."
         pkill -f "python3.*main.py" || true
-        pkill -f "$project_dir/venv/bin/python3.*main.py" || true
+        pkill -f "$PROJECT_DIR/venv/bin/python3.*main.py" || true
         pkill -f "run_sniffer.sh" || true
         sleep 2
-        if pgrep -f "python3.*main.py" > /dev/null || pgrep -f "$project_dir/venv/bin/python3.*main.py" > /dev/null || pgrep -f "run_sniffer.sh" > /dev/null; then
+        if pgrep -f "python3.*main.py" > /dev/null || pgrep -f "$PROJECT_DIR/venv/bin/python3.*main.py" > /dev/null || pgrep -f "run_sniffer.sh" > /dev/null; then
             warning "Algunos procesos del sniffer no se detuvieron automáticamente. Puede requerir permisos de administrador."
         else
             success "Procesos del sniffer detenidos"
@@ -954,8 +1036,6 @@ show_status() {
     
     echo ""
     # Mostrar estado del sniffer
-    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    
     # Verificar servicio systemd
     if systemctl list-unit-files | grep -q "dns-sniffer.service"; then
         if systemctl is-active --quiet dns-sniffer.service 2>/dev/null; then
@@ -977,7 +1057,7 @@ show_status() {
     # Verificar procesos manuales
     local sniffer_pid=$(pgrep -f "python3.*main.py" | head -n1)
     if [ -z "$sniffer_pid" ]; then
-        sniffer_pid=$(pgrep -f "$project_dir/venv/bin/python3.*main.py" | head -n1)
+        sniffer_pid=$(pgrep -f "$PROJECT_DIR/venv/bin/python3.*main.py" | head -n1)
     fi
     if [ -z "$sniffer_pid" ]; then
         sniffer_pid=$(pgrep -f "run_sniffer.sh" | head -n1)
@@ -989,8 +1069,8 @@ show_status() {
         warning "Sniffer no está corriendo"
     fi
     
-    if [ -d "$project_dir/venv" ]; then
-        info "  Virtualenv: $project_dir/venv"
+    if [ -d "$PROJECT_DIR/venv" ]; then
+        info "  Virtualenv: $PROJECT_DIR/venv"
     fi
 }
 
@@ -1035,8 +1115,6 @@ show_logs() {
                 fi
                 ;;
             sniffer)
-                local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-                
                 # Si está corriendo como servicio systemd, mostrar logs del journal
                 if systemctl is-active --quiet dns-sniffer.service 2>/dev/null; then
                     info "Mostrando logs del servicio systemd dns-sniffer (Ctrl+C para salir)..."
@@ -1046,7 +1124,7 @@ show_logs() {
                         warning "Se requieren permisos de administrador para ver logs del servicio systemd."
                         info "Ejecuta: sudo journalctl -u dns-sniffer.service -f"
                     fi
-                elif pgrep -f "python3.*main.py" > /dev/null || pgrep -f "$project_dir/venv/bin/python3.*main.py" > /dev/null || pgrep -f "run_sniffer.sh" > /dev/null; then
+                elif pgrep -f "python3.*main.py" > /dev/null || pgrep -f "$PROJECT_DIR/venv/bin/python3.*main.py" > /dev/null || pgrep -f "run_sniffer.sh" > /dev/null; then
                     info "El sniffer está corriendo como proceso manual."
                     warning "Los logs están en la terminal donde se ejecutó."
                     info "Para ver logs del servicio systemd (si está instalado):"
@@ -1070,6 +1148,54 @@ show_logs() {
     fi
 }
 
+# Función para reparar config.yaml si existe como directorio (error común de Docker)
+fix_config_directory_issue() {
+    local config_file="$PROJECT_DIR/config.yaml"
+    local config_file_alt="$PROJECT_DIR/config.yml"
+    local config_example="$PROJECT_DIR/config.yaml.example"
+    local fixed=false
+    
+    # Verificar y corregir config.yaml
+    if [ -d "$config_file" ]; then
+        warning "Detectado: config.yaml existe como DIRECTORIO (error común de Docker)"
+        info "Eliminando directorio incorrecto..."
+        rm -rf "$config_file"
+        
+        if [ -f "$config_example" ]; then
+            info "Creando config.yaml desde config.yaml.example..."
+            cp "$config_example" "$config_file"
+            success "config.yaml reparado correctamente"
+            warning "Por favor, edita config.yaml con tus configuraciones: nano $config_file"
+        else
+            warning "config.yaml.example no encontrado. Debes crear config.yaml manualmente."
+        fi
+        fixed=true
+    fi
+    
+    # Verificar y corregir config.yml
+    if [ -d "$config_file_alt" ]; then
+        warning "Detectado: config.yml existe como DIRECTORIO (error común de Docker)"
+        info "Eliminando directorio incorrecto..."
+        rm -rf "$config_file_alt"
+        
+        if [ -f "$config_example" ]; then
+            info "Creando config.yml desde config.yaml.example..."
+            cp "$config_example" "$config_file_alt"
+            success "config.yml reparado correctamente"
+            warning "Por favor, edita config.yml con tus configuraciones: nano $config_file_alt"
+        else
+            warning "config.yaml.example no encontrado. Debes crear config.yml manualmente."
+        fi
+        fixed=true
+    fi
+    
+    if [ "$fixed" = true ]; then
+        return 0
+    fi
+    
+    return 1
+}
+
 # Función para limpiar (eliminar contenedores y volúmenes)
 clean_all() {
     warning "¡ATENCIÓN! Esta operación eliminará todos los contenedores y volúmenes."
@@ -1084,6 +1210,11 @@ clean_all() {
     info "Eliminando contenedores y volúmenes..."
     
     stop_services
+    
+    # Intentar reparar problema de config.yaml como directorio antes de continuar
+    if fix_config_directory_issue; then
+        info "Problema de config.yaml como directorio detectado y corregido."
+    fi
     
     # Asegurar que los contenedores estén completamente detenidos y eliminados
     info "Verificando y eliminando contenedores..."
@@ -1163,18 +1294,38 @@ clean_all() {
         fi
     fi
     
+    # Preguntar si también eliminar el archivo de configuración
+    local config_file="$PROJECT_DIR/config.yaml"
+    local config_file_alt="$PROJECT_DIR/config.yml"
+    
+    if [ -f "$config_file" ] || [ -f "$config_file_alt" ]; then
+        read -p "¿También eliminar el archivo de configuración (config.yaml/config.yml)? (escribe 'si' para confirmar): " clean_config
+        if [ "$clean_config" == "si" ]; then
+            warning "Eliminando archivo de configuración..."
+            if [ -f "$config_file" ]; then
+                rm -f "$config_file"
+                success "config.yaml eliminado"
+            fi
+            if [ -f "$config_file_alt" ]; then
+                rm -f "$config_file_alt"
+                success "config.yml eliminado"
+            fi
+        else
+            info "Archivo de configuración conservado"
+        fi
+    fi
+    
     # Preguntar si también eliminar el virtualenv
-    local project_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-    if [ -d "$project_dir/venv" ]; then
+    if [ -d "$PROJECT_DIR/venv" ]; then
         read -p "¿También eliminar el virtualenv? (escribe 'si' para confirmar): " clean_venv
         if [ "$clean_venv" == "si" ]; then
             warning "Eliminando virtualenv..."
-            rm -rf "$project_dir/venv"
+            rm -rf "$PROJECT_DIR/venv"
             success "Virtualenv eliminado"
             
             # También eliminar el script wrapper si existe
-            if [ -f "$project_dir/run_sniffer.sh" ]; then
-                rm -f "$project_dir/run_sniffer.sh"
+            if [ -f "$PROJECT_DIR/run_sniffer.sh" ]; then
+                rm -f "$PROJECT_DIR/run_sniffer.sh"
                 info "Script wrapper eliminado"
             fi
         fi
@@ -1214,6 +1365,15 @@ case "${1:-help}" in
         ;;
     clean)
         clean_all
+        ;;
+    fix-config)
+        info "Verificando y reparando problema de config.yaml como directorio..."
+        if fix_config_directory_issue; then
+            success "Problema detectado y corregido"
+        else
+            info "No se detectó ningún problema con config.yaml"
+            info "Si config.yaml existe como archivo, todo está correcto."
+        fi
         ;;
     help|--help|-h)
         show_help
