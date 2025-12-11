@@ -1085,16 +1085,58 @@ clean_all() {
     
     stop_services
     
-    # Asegurar que los contenedores estén completamente eliminados
-    info "Eliminando contenedores..."
-    docker rm -f dns-monitor-redis dns-monitor-clickhouse dns-monitor-dashboard 2>/dev/null || true
+    # Asegurar que los contenedores estén completamente detenidos y eliminados
+    info "Verificando y eliminando contenedores..."
+    local containers_to_remove=("dns-monitor-redis" "dns-monitor-clickhouse" "dns-monitor-dashboard")
+    local containers_running=false
+    
+    for container in "${containers_to_remove[@]}"; do
+        if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
+            containers_running=true
+            info "Eliminando contenedor ${container}..."
+            docker stop "${container}" 2>/dev/null || true
+            docker rm -f "${container}" 2>/dev/null || true
+        fi
+    done
+    
+    # Esperar un momento para que los procesos se liberen completamente
+    if [ "$containers_running" = true ]; then
+        info "Esperando a que los procesos se liberen..."
+        sleep 2
+    fi
+    
+    # Verificar que ningún contenedor esté corriendo antes de eliminar datos
+    info "Verificando que los contenedores estén detenidos..."
+    local running_containers=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "dns-monitor-(redis|clickhouse|dashboard)" || true)
+    
+    if [ -n "$running_containers" ]; then
+        error "Los siguientes contenedores aún están corriendo:"
+        echo "$running_containers"
+        error "No se pueden eliminar los datos mientras los contenedores estén activos."
+        error "Intenta detenerlos manualmente con: docker stop <nombre_contenedor>"
+        exit 1
+    fi
+    
+    # Verificar que los contenedores estén eliminados (no solo detenidos)
+    local existing_containers=$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E "dns-monitor-(redis|clickhouse|dashboard)" || true)
+    if [ -n "$existing_containers" ]; then
+        warning "Algunos contenedores aún existen (aunque detenidos):"
+        echo "$existing_containers"
+        info "Forzando eliminación..."
+        echo "$existing_containers" | while read -r container; do
+            docker rm -f "$container" 2>/dev/null || true
+        done
+        sleep 1
+    fi
     
     # Eliminar volúmenes
+    info "Eliminando volúmenes Docker..."
     docker volume rm dns-monitor-redis-data 2>/dev/null || true
     docker volume rm dns-monitor-clickhouse-data 2>/dev/null || true
     docker volume rm dns-monitor-clickhouse-logs 2>/dev/null || true
     
     # Eliminar directorios de datos locales (si existen)
+    # Solo después de verificar que los contenedores están detenidos
     if [ -d "data" ]; then
         warning "Eliminando directorio data/..."
         # Intentar eliminar con rm -rf primero
