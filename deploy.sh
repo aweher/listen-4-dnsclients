@@ -1085,6 +1085,10 @@ clean_all() {
     
     stop_services
     
+    # Asegurar que los contenedores estén completamente eliminados
+    info "Eliminando contenedores..."
+    docker rm -f dns-monitor-redis dns-monitor-clickhouse dns-monitor-dashboard 2>/dev/null || true
+    
     # Eliminar volúmenes
     docker volume rm dns-monitor-redis-data 2>/dev/null || true
     docker volume rm dns-monitor-clickhouse-data 2>/dev/null || true
@@ -1093,7 +1097,28 @@ clean_all() {
     # Eliminar directorios de datos locales (si existen)
     if [ -d "data" ]; then
         warning "Eliminando directorio data/..."
-        rm -rf data/
+        # Intentar eliminar con rm -rf primero
+        if ! rm -rf data/ 2>/dev/null; then
+            # Si falla, intentar con find para eliminar archivos problemáticos
+            info "Algunos archivos requieren eliminación forzada..."
+            find data/ -type f -exec chmod 644 {} \; 2>/dev/null || true
+            find data/ -type d -exec chmod 755 {} \; 2>/dev/null || true
+            # Intentar eliminar de nuevo
+            if ! rm -rf data/ 2>/dev/null; then
+                # Último recurso: usar find para eliminar todo
+                find data/ -delete 2>/dev/null || true
+                # Si aún existe, intentar rmdir
+                rmdir data/ 2>/dev/null || true
+            fi
+        fi
+        # Verificar que se eliminó
+        if [ -d "data" ]; then
+            warning "Algunos archivos en data/ no se pudieron eliminar automáticamente."
+            warning "Puede ser necesario eliminarlos manualmente con permisos de administrador."
+            warning "Intenta: sudo rm -rf data/"
+        else
+            success "Directorio data/ eliminado"
+        fi
     fi
     
     # Preguntar si también eliminar el virtualenv
