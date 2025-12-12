@@ -942,15 +942,29 @@ EOFWRAPPER
 stop_services() {
     info "Deteniendo servicios..."
     
-    # Detener servicios Docker
-    if [ -f docker-compose.yml ]; then
-        $DOCKER_COMPOSE_CMD -f docker-compose.yml down 2>/dev/null || true
-    fi
-    if [ -f docker-compose.redis.yml ]; then
-        $DOCKER_COMPOSE_CMD -f docker-compose.redis.yml down 2>/dev/null || true
-    fi
-    if [ -f docker-compose.clickhouse.yml ]; then
-        $DOCKER_COMPOSE_CMD -f docker-compose.clickhouse.yml down 2>/dev/null || true
+    # Detener servicios Docker (solo si Docker está disponible)
+    if command -v docker &> /dev/null; then
+        # Detectar comando de Docker Compose si no está definido
+        if [ -z "${DOCKER_COMPOSE_CMD:-}" ]; then
+            if docker compose version &> /dev/null; then
+                DOCKER_COMPOSE_CMD="docker compose"
+            elif command -v docker-compose &> /dev/null; then
+                DOCKER_COMPOSE_CMD="docker-compose"
+            fi
+        fi
+        
+        # Solo intentar detener contenedores si tenemos el comando de Compose
+        if [ -n "${DOCKER_COMPOSE_CMD:-}" ]; then
+            if [ -f docker-compose.yml ]; then
+                $DOCKER_COMPOSE_CMD -f docker-compose.yml down 2>/dev/null || true
+            fi
+            if [ -f docker-compose.redis.yml ]; then
+                $DOCKER_COMPOSE_CMD -f docker-compose.redis.yml down 2>/dev/null || true
+            fi
+            if [ -f docker-compose.clickhouse.yml ]; then
+                $DOCKER_COMPOSE_CMD -f docker-compose.clickhouse.yml down 2>/dev/null || true
+            fi
+        fi
     fi
     
     # Detener servicio systemd del dashboard si existe y está corriendo
@@ -1008,11 +1022,15 @@ show_status() {
     info "Estado de los servicios:"
     echo ""
     
-    # Mostrar servicios Docker
-    if docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "dns-monitor|NAMES"; then
-        docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" | grep -E "dns-monitor|NAMES"
+    # Mostrar servicios Docker (solo si Docker está disponible)
+    if command -v docker &> /dev/null; then
+        if docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null | grep -E "dns-monitor|NAMES"; then
+            docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null | grep -E "dns-monitor|NAMES"
+        else
+            info "No hay servicios Docker DNS Monitor corriendo"
+        fi
     else
-        warning "No hay servicios Docker DNS Monitor corriendo"
+        info "Docker no está instalado. Solo se mostrarán servicios systemd."
     fi
     
     echo ""
@@ -1080,15 +1098,52 @@ show_logs() {
     
     if [ -z "$service" ]; then
         info "Mostrando logs de todos los servicios (Ctrl+C para salir)..."
-        $DOCKER_COMPOSE_CMD -f docker-compose.yml logs -f 2>/dev/null || \
-        (docker logs -f dns-monitor-redis & docker logs -f dns-monitor-clickhouse & docker logs -f dns-monitor-dashboard & wait)
+        if command -v docker &> /dev/null; then
+            # Detectar comando de Docker Compose si no está definido
+            if [ -z "${DOCKER_COMPOSE_CMD:-}" ]; then
+                if docker compose version &> /dev/null; then
+                    DOCKER_COMPOSE_CMD="docker compose"
+                elif command -v docker-compose &> /dev/null; then
+                    DOCKER_COMPOSE_CMD="docker-compose"
+                fi
+            fi
+            
+            if [ -n "${DOCKER_COMPOSE_CMD:-}" ] && [ -f docker-compose.yml ]; then
+                $DOCKER_COMPOSE_CMD -f docker-compose.yml logs -f 2>/dev/null || \
+                (docker logs -f dns-monitor-redis & docker logs -f dns-monitor-clickhouse & docker logs -f dns-monitor-dashboard & wait)
+            else
+                warning "Docker Compose no está disponible. Mostrando logs de servicios systemd..."
+                if systemctl is-active --quiet dns-sniffer.service 2>/dev/null; then
+                    info "Logs del sniffer: sudo journalctl -u dns-sniffer.service -f"
+                fi
+                if systemctl is-active --quiet dns-dashboard.service 2>/dev/null; then
+                    info "Logs del dashboard: sudo journalctl -u dns-dashboard.service -f"
+                fi
+            fi
+        else
+            warning "Docker no está instalado. Mostrando logs de servicios systemd..."
+            if systemctl is-active --quiet dns-sniffer.service 2>/dev/null; then
+                info "Logs del sniffer: sudo journalctl -u dns-sniffer.service -f"
+            fi
+            if systemctl is-active --quiet dns-dashboard.service 2>/dev/null; then
+                info "Logs del dashboard: sudo journalctl -u dns-dashboard.service -f"
+            fi
+        fi
     else
         case $service in
             redis)
-                docker logs -f dns-monitor-redis
+                if command -v docker &> /dev/null; then
+                    docker logs -f dns-monitor-redis 2>/dev/null || warning "Contenedor Redis no encontrado o no está corriendo"
+                else
+                    error "Docker no está instalado. Redis solo está disponible como contenedor Docker."
+                fi
                 ;;
             clickhouse)
-                docker logs -f dns-monitor-clickhouse
+                if command -v docker &> /dev/null; then
+                    docker logs -f dns-monitor-clickhouse 2>/dev/null || warning "Contenedor ClickHouse no encontrado o no está corriendo"
+                else
+                    error "Docker no está instalado. ClickHouse solo está disponible como contenedor Docker."
+                fi
                 ;;
             dashboard)
                 # Si está corriendo como servicio systemd, mostrar logs del journal
@@ -1100,14 +1155,14 @@ show_logs() {
                         warning "Se requieren permisos de administrador para ver logs del servicio systemd."
                         info "Ejecuta: sudo journalctl -u dns-dashboard.service -f"
                     fi
-                elif docker ps | grep -q dns-monitor-dashboard; then
+                elif command -v docker &> /dev/null && docker ps 2>/dev/null | grep -q dns-monitor-dashboard; then
                     # Si está corriendo en Docker, mostrar logs de Docker
                     docker logs -f dns-monitor-dashboard
                 else
                     warning "El dashboard no está corriendo"
                     if systemctl list-unit-files | grep -q "dns-dashboard.service"; then
                         info "Para iniciar el servicio: sudo systemctl start dns-dashboard"
-                    elif docker ps -a | grep -q dns-monitor-dashboard; then
+                    elif command -v docker &> /dev/null && docker ps -a 2>/dev/null | grep -q dns-monitor-dashboard; then
                         info "Para iniciar en Docker: docker start dns-monitor-dashboard"
                     else
                         info "Para iniciar: ./deploy.sh dashboard"
@@ -1198,8 +1253,14 @@ fix_config_directory_issue() {
 
 # Función para limpiar (eliminar contenedores y volúmenes)
 clean_all() {
-    warning "¡ATENCIÓN! Esta operación eliminará todos los contenedores y volúmenes."
-    warning "Esto incluye TODOS LOS DATOS almacenados en Redis y ClickHouse."
+    warning "¡ATENCIÓN! Esta operación eliminará:"
+    warning "  - Servicios systemd (sniffer y dashboard)"
+    warning "  - Procesos del sniffer en ejecución"
+    if command -v docker &> /dev/null; then
+        warning "  - Contenedores Docker (Redis, ClickHouse, Dashboard)"
+        warning "  - Volúmenes Docker (TODOS LOS DATOS almacenados en Redis y ClickHouse)"
+    fi
+    warning "  - Directorio data/ (si existe)"
     read -p "¿Estás seguro de que quieres continuar? (escribe 'si' para confirmar): " confirm
     
     if [ "$confirm" != "si" ]; then
@@ -1207,7 +1268,7 @@ clean_all() {
         exit 0
     fi
     
-    info "Eliminando contenedores y volúmenes..."
+    info "Eliminando servicios y datos..."
     
     stop_services
     
@@ -1216,55 +1277,60 @@ clean_all() {
         info "Problema de config.yaml como directorio detectado y corregido."
     fi
     
-    # Asegurar que los contenedores estén completamente detenidos y eliminados
-    info "Verificando y eliminando contenedores..."
-    local containers_to_remove=("dns-monitor-redis" "dns-monitor-clickhouse" "dns-monitor-dashboard")
-    local containers_running=false
-    
-    for container in "${containers_to_remove[@]}"; do
-        if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
-            containers_running=true
-            info "Eliminando contenedor ${container}..."
-            docker stop "${container}" 2>/dev/null || true
-            docker rm -f "${container}" 2>/dev/null || true
-        fi
-    done
-    
-    # Esperar un momento para que los procesos se liberen completamente
-    if [ "$containers_running" = true ]; then
-        info "Esperando a que los procesos se liberen..."
-        sleep 2
-    fi
-    
-    # Verificar que ningún contenedor esté corriendo antes de eliminar datos
-    info "Verificando que los contenedores estén detenidos..."
-    local running_containers=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "dns-monitor-(redis|clickhouse|dashboard)" || true)
-    
-    if [ -n "$running_containers" ]; then
-        error "Los siguientes contenedores aún están corriendo:"
-        echo "$running_containers"
-        error "No se pueden eliminar los datos mientras los contenedores estén activos."
-        error "Intenta detenerlos manualmente con: docker stop <nombre_contenedor>"
-        exit 1
-    fi
-    
-    # Verificar que los contenedores estén eliminados (no solo detenidos)
-    local existing_containers=$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E "dns-monitor-(redis|clickhouse|dashboard)" || true)
-    if [ -n "$existing_containers" ]; then
-        warning "Algunos contenedores aún existen (aunque detenidos):"
-        echo "$existing_containers"
-        info "Forzando eliminación..."
-        echo "$existing_containers" | while read -r container; do
-            docker rm -f "$container" 2>/dev/null || true
+    # Operaciones de Docker (solo si Docker está disponible)
+    if command -v docker &> /dev/null; then
+        # Asegurar que los contenedores estén completamente detenidos y eliminados
+        info "Verificando y eliminando contenedores Docker..."
+        local containers_to_remove=("dns-monitor-redis" "dns-monitor-clickhouse" "dns-monitor-dashboard")
+        local containers_running=false
+        
+        for container in "${containers_to_remove[@]}"; do
+            if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
+                containers_running=true
+                info "Eliminando contenedor ${container}..."
+                docker stop "${container}" 2>/dev/null || true
+                docker rm -f "${container}" 2>/dev/null || true
+            fi
         done
-        sleep 1
+        
+        # Esperar un momento para que los procesos se liberen completamente
+        if [ "$containers_running" = true ]; then
+            info "Esperando a que los procesos se liberen..."
+            sleep 2
+        fi
+        
+        # Verificar que ningún contenedor esté corriendo antes de eliminar datos
+        info "Verificando que los contenedores estén detenidos..."
+        local running_containers=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "dns-monitor-(redis|clickhouse|dashboard)" || true)
+        
+        if [ -n "$running_containers" ]; then
+            error "Los siguientes contenedores aún están corriendo:"
+            echo "$running_containers"
+            error "No se pueden eliminar los datos mientras los contenedores estén activos."
+            error "Intenta detenerlos manualmente con: docker stop <nombre_contenedor>"
+            exit 1
+        fi
+        
+        # Verificar que los contenedores estén eliminados (no solo detenidos)
+        local existing_containers=$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E "dns-monitor-(redis|clickhouse|dashboard)" || true)
+        if [ -n "$existing_containers" ]; then
+            warning "Algunos contenedores aún existen (aunque detenidos):"
+            echo "$existing_containers"
+            info "Forzando eliminación..."
+            echo "$existing_containers" | while read -r container; do
+                docker rm -f "$container" 2>/dev/null || true
+            done
+            sleep 1
+        fi
+        
+        # Eliminar volúmenes
+        info "Eliminando volúmenes Docker..."
+        docker volume rm dns-monitor-redis-data 2>/dev/null || true
+        docker volume rm dns-monitor-clickhouse-data 2>/dev/null || true
+        docker volume rm dns-monitor-clickhouse-logs 2>/dev/null || true
+    else
+        info "Docker no está instalado. Saltando limpieza de contenedores y volúmenes Docker."
     fi
-    
-    # Eliminar volúmenes
-    info "Eliminando volúmenes Docker..."
-    docker volume rm dns-monitor-redis-data 2>/dev/null || true
-    docker volume rm dns-monitor-clickhouse-data 2>/dev/null || true
-    docker volume rm dns-monitor-clickhouse-logs 2>/dev/null || true
     
     # Eliminar directorios de datos locales (si existen)
     # Solo después de verificar que los contenedores están detenidos
