@@ -49,10 +49,12 @@ class DNSClickHouseClient:
             password: Contraseña de ClickHouse (opcional)
         """
         try:
-            # Guardar el nombre de la base de datos como atributo de la clase
+            # Guardar parámetros de conexión como atributos para reconexión
+            self.host = host
+            self.port = port
             self.database = database
-            # Normalize password: ensure it's a string, trim whitespace, handle None
-            password_str = str(password).strip() if password else ''
+            self.user = user
+            self.password = password_str = str(password).strip() if password else ''
             
             # Log connection attempt (without showing password)
             has_password = bool(password_str)

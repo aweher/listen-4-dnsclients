@@ -701,16 +701,19 @@ class DNSSniffer:
         # Configurar ClickHouse si está disponible
         if clickhouse_client:
             self.clickhouse_client = clickhouse_client
-            # Guardar configuración para reconexión
-            if hasattr(clickhouse_client, 'client'):
-                client = clickhouse_client.client
+            # Guardar configuración para reconexión usando los atributos almacenados
+            if hasattr(clickhouse_client, 'host'):
                 self.clickhouse_config = {
-                    'host': client.host,
-                    'port': client.port,
-                    'database': client.database,
-                    'user': client.user,
-                    'password': client.password
+                    'host': clickhouse_client.host,
+                    'port': clickhouse_client.port,
+                    'database': clickhouse_client.database,
+                    'user': clickhouse_client.user,
+                    'password': clickhouse_client.password
                 }
+            else:
+                # Fallback: intentar obtener de la configuración pasada
+                logger.warning("No se pudo obtener configuración de ClickHouse para reconexión")
+                self.clickhouse_config = None
         
         # Iniciar threads solo si hay al menos un cliente disponible
         if self.redis_client or self.clickhouse_client:
