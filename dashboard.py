@@ -40,6 +40,45 @@ st.set_page_config(
     initial_sidebar_state="expanded"
 )
 
+# Script para verificar cookies ANTES de cualquier renderizado
+# Usar componente HTML para ejecutar el script de forma más temprana
+st.components.v1.html(
+    """
+    <script>
+    (function() {
+        function getCookie(name) {
+            const nameEQ = name + '=';
+            const ca = document.cookie.split(';');
+            for(let i = 0; i < ca.length; i++) {
+                let c = ca[i];
+                while (c.charAt(0) === ' ') c = c.substring(1, c.length);
+                if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length, c.length);
+            }
+            return null;
+        }
+        
+        // Solo ejecutar si no estamos ya procesando autenticación
+        const urlParams = new URLSearchParams(window.location.search);
+        if (!urlParams.has('from_cookie')) {
+            const authToken = getCookie('dns_dashboard_auth');
+            const username = getCookie('dns_dashboard_user');
+            
+            if (authToken && username) {
+                // Redirigir inmediatamente
+                const url = new URL(window.location);
+                url.searchParams.set('auth_token', authToken);
+                url.searchParams.set('username', username);
+                url.searchParams.set('from_cookie', 'true');
+                window.location.replace(url.toString());
+            }
+        }
+    })();
+    </script>
+    """,
+    height=0,
+    key="early_cookie_check"
+)
+
 # Cargar configuración de autenticación
 config = get_config()
 auth_config = config.get_auth_config()
@@ -49,6 +88,8 @@ if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
 if 'auth_token' not in st.session_state:
     st.session_state.auth_token = None
+if 'username' not in st.session_state:
+    st.session_state.username = None
 
 # Función para generar un token de autenticación simple
 def generate_auth_token(username):
@@ -129,48 +170,17 @@ def check_password(user, pwd):
         return auth_config[user] == pwd
     return False
 
-# Verificar cookies al inicio usando JavaScript
-# Si hay una cookie de autenticación válida, establecer el estado automáticamente
-if not st.session_state.authenticated and 'auth_checked' not in st.session_state:
-    st.session_state.auth_checked = True
-    
-    # Componente que lee cookies y establece autenticación mediante query params
-    # Solo se ejecuta si no estamos ya autenticados y no hay parámetros de cookie en la URL
-    query_params = st.query_params
-    if 'from_cookie' not in query_params:
-        st.components.v1.html(
-            f"""
-            {cookie_script}
-            <script>
-            (function() {{
-                const authToken = getCookie('dns_dashboard_auth');
-                const username = getCookie('dns_dashboard_user');
-                
-                if (authToken && username) {{
-                    // Si hay cookie válida, redirigir con parámetros para establecer autenticación
-                    const url = new URL(window.location);
-                    if (!url.searchParams.has('from_cookie')) {{
-                        url.searchParams.set('auth_token', authToken);
-                        url.searchParams.set('username', username);
-                        url.searchParams.set('from_cookie', 'true');
-                        window.location.href = url.toString();
-                    }}
-                }}
-            }})();
-            </script>
-            """,
-            height=0,
-            key="check_auth_cookie"
-        )
-
-# Verificar parámetros de autenticación de cookies
+# Verificar cookies ANTES de mostrar cualquier contenido
+# Usar query params como mecanismo de comunicación entre JS y Python
 query_params = st.query_params
+
+# Si hay parámetros de cookie en la URL, restaurar autenticación
 if 'from_cookie' in query_params and 'auth_token' in query_params and 'username' in query_params:
     if not st.session_state.authenticated:
-        username = query_params['username']
-        token = query_params['auth_token']
+        username = query_params.get('username')
+        token = query_params.get('auth_token')
         # Verificar que el usuario existe (validación básica)
-        if username in auth_config:
+        if username and token and username in auth_config:
             st.session_state.authenticated = True
             st.session_state.auth_token = token
             st.session_state.username = username
@@ -178,6 +188,7 @@ if 'from_cookie' in query_params and 'auth_token' in query_params and 'username'
             for key in list(query_params.keys()):
                 del query_params[key]
             st.rerun()
+
 
 # Pantalla de login
 if not st.session_state.authenticated:
