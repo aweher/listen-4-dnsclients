@@ -138,6 +138,102 @@ create_data_directories() {
     success "Directorios creados"
 }
 
+# Función para generar contraseña aleatoria de 32 caracteres
+generate_random_password() {
+    # Intentar usar openssl primero, luego /dev/urandom
+    if command -v openssl &> /dev/null; then
+        openssl rand -base64 24 | tr -d "=+/" | cut -c1-32
+    else
+        # Usar /dev/urandom como alternativa
+        cat /dev/urandom | tr -dc 'a-zA-Z0-9' | fold -w 32 | head -n 1
+    fi
+}
+
+# Función para actualizar credenciales del dashboard en config.yaml
+update_dashboard_credentials() {
+    local config_file="$1"
+    local dashboard_user="$2"
+    local dashboard_password="$3"
+    
+    # Verificar que Python está disponible para editar YAML de forma segura
+    if ! command -v python3 &> /dev/null; then
+        warning "Python3 no está disponible. No se pueden actualizar las credenciales automáticamente."
+        warning "Por favor, edita $config_file manualmente y configura las credenciales del dashboard."
+        return 1
+    fi
+    
+    # Verificar que PyYAML está disponible
+    if ! python3 -c "import yaml" 2>/dev/null; then
+        warning "PyYAML no está instalado. Intentando instalar..."
+        if python3 -m pip install --quiet pyyaml 2>/dev/null; then
+            success "PyYAML instalado correctamente"
+        else
+            warning "No se pudo instalar PyYAML automáticamente."
+            warning "Por favor, instala PyYAML manualmente: pip3 install pyyaml"
+            warning "O edita $config_file manualmente y configura las credenciales del dashboard."
+            return 1
+        fi
+    fi
+    
+    # Usar Python para actualizar el archivo YAML de forma segura
+    local python_output
+    python_output=$(python3 << 'PYEOF'
+import yaml
+import sys
+
+try:
+    config_file = sys.argv[1]
+    dashboard_user = sys.argv[2]
+    dashboard_password = sys.argv[3]
+    
+    # Leer el archivo YAML
+    with open(config_file, 'r', encoding='utf-8') as f:
+        config = yaml.safe_load(f) or {}
+    
+    # Asegurar que existe la sección auth
+    if 'auth' not in config:
+        config['auth'] = {}
+    if 'users' not in config['auth']:
+        config['auth']['users'] = []
+    
+    # Buscar si ya existe el usuario
+    user_found = False
+    for i, user in enumerate(config['auth']['users']):
+        if isinstance(user, dict) and user.get('username') == dashboard_user:
+            config['auth']['users'][i]['password'] = dashboard_password
+            user_found = True
+            break
+    
+    # Si no existe, agregarlo
+    if not user_found:
+        config['auth']['users'] = [
+            {
+                'username': dashboard_user,
+                'password': dashboard_password
+            }
+        ]
+    
+    # Guardar el archivo
+    with open(config_file, 'w', encoding='utf-8') as f:
+        yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+    
+    print("OK")
+    sys.exit(0)
+except Exception as e:
+    print(f"ERROR: {e}", file=sys.stderr)
+    sys.exit(1)
+PYEOF
+"$config_file" "$dashboard_user" "$dashboard_password" 2>&1)
+    local python_exit_code=$?
+    
+    if [ $python_exit_code -eq 0 ] && echo "$python_output" | grep -q "^OK$"; then
+        return 0
+    else
+        error "Error al actualizar credenciales: $python_output"
+        return 1
+    fi
+}
+
 # Función para verificar y crear config.yaml si es necesario
 check_and_create_config() {
     local config_file="$PROJECT_DIR/config.yaml"
@@ -183,7 +279,45 @@ check_and_create_config() {
             info "Copiando config.yaml.example a config.yaml..."
             cp "$config_example" "$config_file"
             success "Archivo config.yaml creado"
-            warning "Por favor, edita config.yaml con tus configuraciones antes de continuar."
+            
+            # Configurar credenciales del dashboard
+            echo ""
+            info "Configuración de credenciales del Dashboard"
+            info "=========================================="
+            echo ""
+            
+            # Generar contraseña aleatoria por defecto
+            local default_password=$(generate_random_password)
+            
+            # Preguntar por usuario
+            read -p "Usuario del dashboard [admin]: " dashboard_user
+            dashboard_user=${dashboard_user:-admin}
+            
+            # Preguntar por contraseña
+            echo ""
+            info "Contraseña sugerida (32 caracteres aleatorios): $default_password"
+            read -p "Contraseña del dashboard [usar sugerida]: " dashboard_password
+            dashboard_password=${dashboard_password:-$default_password}
+            
+            # Actualizar credenciales en el archivo
+            echo ""
+            info "Actualizando credenciales del dashboard en config.yaml..."
+            if update_dashboard_credentials "$config_file" "$dashboard_user" "$dashboard_password"; then
+                success "Credenciales del dashboard configuradas:"
+                info "  Usuario: $dashboard_user"
+                info "  Contraseña: $dashboard_password"
+                warning "¡IMPORTANTE! Guarda estas credenciales en un lugar seguro."
+            else
+                warning "No se pudieron actualizar las credenciales automáticamente."
+                warning "Por favor, edita $config_file manualmente y configura:"
+                warning "  auth:"
+                warning "    users:"
+                warning "      - username: $dashboard_user"
+                warning "        password: $dashboard_password"
+            fi
+            
+            echo ""
+            warning "Por favor, revisa y edita config.yaml con tus configuraciones antes de continuar."
             info "Puedes editarlo con: nano $config_file"
             return 0
         else
@@ -955,14 +1089,14 @@ stop_services() {
         
         # Solo intentar detener contenedores si tenemos el comando de Compose
         if [ -n "${DOCKER_COMPOSE_CMD:-}" ]; then
-            if [ -f docker-compose.yml ]; then
-                $DOCKER_COMPOSE_CMD -f docker-compose.yml down 2>/dev/null || true
-            fi
-            if [ -f docker-compose.redis.yml ]; then
-                $DOCKER_COMPOSE_CMD -f docker-compose.redis.yml down 2>/dev/null || true
-            fi
-            if [ -f docker-compose.clickhouse.yml ]; then
-                $DOCKER_COMPOSE_CMD -f docker-compose.clickhouse.yml down 2>/dev/null || true
+    if [ -f docker-compose.yml ]; then
+        $DOCKER_COMPOSE_CMD -f docker-compose.yml down 2>/dev/null || true
+    fi
+    if [ -f docker-compose.redis.yml ]; then
+        $DOCKER_COMPOSE_CMD -f docker-compose.redis.yml down 2>/dev/null || true
+    fi
+    if [ -f docker-compose.clickhouse.yml ]; then
+        $DOCKER_COMPOSE_CMD -f docker-compose.clickhouse.yml down 2>/dev/null || true
             fi
         fi
     fi
@@ -1026,7 +1160,7 @@ show_status() {
     if command -v docker &> /dev/null; then
         if docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null | grep -E "dns-monitor|NAMES"; then
             docker ps --format "table {{.Names}}\t{{.Status}}\t{{.Ports}}" 2>/dev/null | grep -E "dns-monitor|NAMES"
-        else
+    else
             info "No hay servicios Docker DNS Monitor corriendo"
         fi
     else
@@ -1109,8 +1243,8 @@ show_logs() {
             fi
             
             if [ -n "${DOCKER_COMPOSE_CMD:-}" ] && [ -f docker-compose.yml ]; then
-                $DOCKER_COMPOSE_CMD -f docker-compose.yml logs -f 2>/dev/null || \
-                (docker logs -f dns-monitor-redis & docker logs -f dns-monitor-clickhouse & docker logs -f dns-monitor-dashboard & wait)
+        $DOCKER_COMPOSE_CMD -f docker-compose.yml logs -f 2>/dev/null || \
+        (docker logs -f dns-monitor-redis & docker logs -f dns-monitor-clickhouse & docker logs -f dns-monitor-dashboard & wait)
             else
                 warning "Docker Compose no está disponible. Mostrando logs de servicios systemd..."
                 if systemctl is-active --quiet dns-sniffer.service 2>/dev/null; then
@@ -1279,55 +1413,55 @@ clean_all() {
     
     # Operaciones de Docker (solo si Docker está disponible)
     if command -v docker &> /dev/null; then
-        # Asegurar que los contenedores estén completamente detenidos y eliminados
+    # Asegurar que los contenedores estén completamente detenidos y eliminados
         info "Verificando y eliminando contenedores Docker..."
-        local containers_to_remove=("dns-monitor-redis" "dns-monitor-clickhouse" "dns-monitor-dashboard")
-        local containers_running=false
-        
-        for container in "${containers_to_remove[@]}"; do
-            if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
-                containers_running=true
-                info "Eliminando contenedor ${container}..."
-                docker stop "${container}" 2>/dev/null || true
-                docker rm -f "${container}" 2>/dev/null || true
-            fi
+    local containers_to_remove=("dns-monitor-redis" "dns-monitor-clickhouse" "dns-monitor-dashboard")
+    local containers_running=false
+    
+    for container in "${containers_to_remove[@]}"; do
+        if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -q "^${container}$"; then
+            containers_running=true
+            info "Eliminando contenedor ${container}..."
+            docker stop "${container}" 2>/dev/null || true
+            docker rm -f "${container}" 2>/dev/null || true
+        fi
+    done
+    
+    # Esperar un momento para que los procesos se liberen completamente
+    if [ "$containers_running" = true ]; then
+        info "Esperando a que los procesos se liberen..."
+        sleep 2
+    fi
+    
+    # Verificar que ningún contenedor esté corriendo antes de eliminar datos
+    info "Verificando que los contenedores estén detenidos..."
+    local running_containers=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "dns-monitor-(redis|clickhouse|dashboard)" || true)
+    
+    if [ -n "$running_containers" ]; then
+        error "Los siguientes contenedores aún están corriendo:"
+        echo "$running_containers"
+        error "No se pueden eliminar los datos mientras los contenedores estén activos."
+        error "Intenta detenerlos manualmente con: docker stop <nombre_contenedor>"
+        exit 1
+    fi
+    
+    # Verificar que los contenedores estén eliminados (no solo detenidos)
+    local existing_containers=$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E "dns-monitor-(redis|clickhouse|dashboard)" || true)
+    if [ -n "$existing_containers" ]; then
+        warning "Algunos contenedores aún existen (aunque detenidos):"
+        echo "$existing_containers"
+        info "Forzando eliminación..."
+        echo "$existing_containers" | while read -r container; do
+            docker rm -f "$container" 2>/dev/null || true
         done
-        
-        # Esperar un momento para que los procesos se liberen completamente
-        if [ "$containers_running" = true ]; then
-            info "Esperando a que los procesos se liberen..."
-            sleep 2
-        fi
-        
-        # Verificar que ningún contenedor esté corriendo antes de eliminar datos
-        info "Verificando que los contenedores estén detenidos..."
-        local running_containers=$(docker ps --format '{{.Names}}' 2>/dev/null | grep -E "dns-monitor-(redis|clickhouse|dashboard)" || true)
-        
-        if [ -n "$running_containers" ]; then
-            error "Los siguientes contenedores aún están corriendo:"
-            echo "$running_containers"
-            error "No se pueden eliminar los datos mientras los contenedores estén activos."
-            error "Intenta detenerlos manualmente con: docker stop <nombre_contenedor>"
-            exit 1
-        fi
-        
-        # Verificar que los contenedores estén eliminados (no solo detenidos)
-        local existing_containers=$(docker ps -a --format '{{.Names}}' 2>/dev/null | grep -E "dns-monitor-(redis|clickhouse|dashboard)" || true)
-        if [ -n "$existing_containers" ]; then
-            warning "Algunos contenedores aún existen (aunque detenidos):"
-            echo "$existing_containers"
-            info "Forzando eliminación..."
-            echo "$existing_containers" | while read -r container; do
-                docker rm -f "$container" 2>/dev/null || true
-            done
-            sleep 1
-        fi
-        
-        # Eliminar volúmenes
-        info "Eliminando volúmenes Docker..."
-        docker volume rm dns-monitor-redis-data 2>/dev/null || true
-        docker volume rm dns-monitor-clickhouse-data 2>/dev/null || true
-        docker volume rm dns-monitor-clickhouse-logs 2>/dev/null || true
+        sleep 1
+    fi
+    
+    # Eliminar volúmenes
+    info "Eliminando volúmenes Docker..."
+    docker volume rm dns-monitor-redis-data 2>/dev/null || true
+    docker volume rm dns-monitor-clickhouse-data 2>/dev/null || true
+    docker volume rm dns-monitor-clickhouse-logs 2>/dev/null || true
     else
         info "Docker no está instalado. Saltando limpieza de contenedores y volúmenes Docker."
     fi
