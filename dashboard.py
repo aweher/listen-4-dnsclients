@@ -28,6 +28,7 @@ import pandas as pd
 import plotly.express as px
 from datetime import datetime
 import time
+import hashlib
 from redis_client import DNSRedisClient
 from config import get_config
 
@@ -46,6 +47,80 @@ auth_config = config.get_auth_config()
 # Inicializar sesión
 if 'authenticated' not in st.session_state:
     st.session_state.authenticated = False
+if 'auth_token' not in st.session_state:
+    st.session_state.auth_token = None
+
+# Función para generar un token de autenticación simple
+def generate_auth_token(username):
+    """Genera un token simple basado en el usuario y timestamp"""
+    timestamp = str(int(time.time()))
+    token_string = f"{username}:{timestamp}"
+    return hashlib.sha256(token_string.encode()).hexdigest()[:32]
+
+# Función para verificar token (simplificada - en producción usar JWT o similar)
+def verify_auth_token(token, username):
+    """Verifica que el token sea válido para el usuario"""
+    # En una implementación real, esto debería verificar contra una base de datos
+    # o usar JWT. Por ahora, simplemente verificamos que el usuario existe
+    return username in auth_config
+
+# JavaScript para manejar cookies
+cookie_script = """
+<script>
+function setCookie(name, value, days) {
+    const expires = new Date();
+    expires.setTime(expires.getTime() + (days * 24 * 60 * 60 * 1000));
+    document.cookie = name + '=' + value + ';expires=' + expires.toUTCString() + ';path=/';
+}
+
+function getCookie(name) {
+    const nameEQ = name + '=';
+    const ca = document.cookie.split(';');
+    for(let i = 0; i < ca.length; i++) {
+        let c = ca[i];
+        while (c.charAt(0) === ' ') c = c.substring(1, c.length);
+        if (c.indexOf(nameEQ) === 0) return c.substring(nameEQ.length, c.length);
+    }
+    return null;
+}
+
+function deleteCookie(name) {
+    document.cookie = name + '=; expires=Thu, 01 Jan 1970 00:00:00 UTC; path=/;';
+}
+</script>
+"""
+
+
+# Función para establecer cookie de autenticación
+def set_auth_cookie(username, token):
+    """Establece la cookie de autenticación usando JavaScript"""
+    days = 7  # Cookie válida por 7 días
+    st.components.v1.html(
+        f"""
+        {cookie_script}
+        <script>
+        setCookie('dns_dashboard_auth', '{token}', {days});
+        setCookie('dns_dashboard_user', '{username}', {days});
+        </script>
+        """,
+        height=0,
+        key=f"set_cookie_{int(time.time())}"
+    )
+
+# Función para eliminar cookie de autenticación
+def clear_auth_cookie():
+    """Elimina la cookie de autenticación"""
+    st.components.v1.html(
+        f"""
+        {cookie_script}
+        <script>
+        deleteCookie('dns_dashboard_auth');
+        deleteCookie('dns_dashboard_user');
+        </script>
+        """,
+        height=0,
+        key=f"clear_cookie_{int(time.time())}"
+    )
 
 # Función de autenticación
 def check_password(user, pwd):
@@ -53,6 +128,56 @@ def check_password(user, pwd):
     if user in auth_config:
         return auth_config[user] == pwd
     return False
+
+# Verificar cookies al inicio usando JavaScript
+# Si hay una cookie de autenticación válida, establecer el estado automáticamente
+if not st.session_state.authenticated and 'auth_checked' not in st.session_state:
+    st.session_state.auth_checked = True
+    
+    # Componente que lee cookies y establece autenticación mediante query params
+    # Solo se ejecuta si no estamos ya autenticados y no hay parámetros de cookie en la URL
+    query_params = st.query_params
+    if 'from_cookie' not in query_params:
+        st.components.v1.html(
+            f"""
+            {cookie_script}
+            <script>
+            (function() {{
+                const authToken = getCookie('dns_dashboard_auth');
+                const username = getCookie('dns_dashboard_user');
+                
+                if (authToken && username) {{
+                    // Si hay cookie válida, redirigir con parámetros para establecer autenticación
+                    const url = new URL(window.location);
+                    if (!url.searchParams.has('from_cookie')) {{
+                        url.searchParams.set('auth_token', authToken);
+                        url.searchParams.set('username', username);
+                        url.searchParams.set('from_cookie', 'true');
+                        window.location.href = url.toString();
+                    }}
+                }}
+            }})();
+            </script>
+            """,
+            height=0,
+            key="check_auth_cookie"
+        )
+
+# Verificar parámetros de autenticación de cookies
+query_params = st.query_params
+if 'from_cookie' in query_params and 'auth_token' in query_params and 'username' in query_params:
+    if not st.session_state.authenticated:
+        username = query_params['username']
+        token = query_params['auth_token']
+        # Verificar que el usuario existe (validación básica)
+        if username in auth_config:
+            st.session_state.authenticated = True
+            st.session_state.auth_token = token
+            st.session_state.username = username
+            # Limpiar parámetros de la URL
+            for key in list(query_params.keys()):
+                del query_params[key]
+            st.rerun()
 
 # Pantalla de login
 if not st.session_state.authenticated:
@@ -66,7 +191,13 @@ if not st.session_state.authenticated:
         
         if submit_button:
             if check_password(input_username, input_password):
+                # Generar token de autenticación
+                token = generate_auth_token(input_username)
                 st.session_state.authenticated = True
+                st.session_state.auth_token = token
+                st.session_state.username = input_username
+                # Establecer cookies para persistencia
+                set_auth_cookie(input_username, token)
                 st.rerun()
             else:
                 st.error("❌ Usuario o contraseña incorrectos")
@@ -91,6 +222,11 @@ refresh_interval = st.sidebar.slider("Intervalo (segundos)", 1, 600, 180)
 st.sidebar.markdown("---")
 if st.sidebar.button("🚪 Cerrar Sesión"):
     st.session_state.authenticated = False
+    st.session_state.auth_token = None
+    if 'username' in st.session_state:
+        del st.session_state.username
+    # Eliminar cookies
+    clear_auth_cookie()
     st.rerun()
 
 # Título principal con indicador de estado
