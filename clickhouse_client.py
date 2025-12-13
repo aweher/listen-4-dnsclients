@@ -51,12 +51,19 @@ class DNSClickHouseClient:
         try:
             # Guardar el nombre de la base de datos como atributo de la clase
             self.database = database
+            # Normalize password: ensure it's a string, trim whitespace, handle None
+            password_str = str(password).strip() if password else ''
+            
+            # Log connection attempt (without showing password)
+            has_password = bool(password_str)
+            logger.debug(f"Conectando a ClickHouse en {host}:{port} (database: {database}, user: {user}, password: {'***' if has_password else 'no'})")
+            
             self.client = Client(
                 host=host,
                 port=port,
                 database=database,
                 user=user,
-                password=password or '',
+                password=password_str,
                 connect_timeout=10,
                 send_receive_timeout=30
             )
@@ -67,7 +74,13 @@ class DNSClickHouseClient:
             # Crear base de datos y tabla si no existen
             self._initialize_database()
         except ClickHouseError as e:
-            logger.error(f"Error conectando a ClickHouse: {e}")
+            error_msg = str(e)
+            # Provide more helpful error message for authentication failures
+            if 'Authentication failed' in error_msg or 'password is incorrect' in error_msg:
+                logger.error(f"Error de autenticación en ClickHouse: El usuario '{user}' no pudo autenticarse. Verifica la contraseña en config.yaml")
+                logger.error(f"Detalles del error: {e}")
+            else:
+                logger.error(f"Error conectando a ClickHouse: {e}")
             raise
     
     def _initialize_database(self):

@@ -20,7 +20,7 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 
-Módulo para cargar y gestionar la configuración del proyecto
+Mรณdulo para cargar y gestionar la configuraciรณn del proyecto
 """
 
 import os
@@ -28,19 +28,19 @@ import yaml
 from typing import Dict, Any, Optional
 from pathlib import Path
 
-# Ruta por defecto del archivo de configuración
+# Ruta por defecto del archivo de configuraciรณn
 DEFAULT_CONFIG_PATH = Path(__file__).parent / "config.yaml"
 
 
 class Config:
-    """Clase para gestionar la configuración del proyecto"""
+    """Clase para gestionar la configuraciรณn del proyecto"""
     
     def __init__(self, config_path: Optional[str] = None):
         """
-        Inicializa la configuración desde un archivo YAML
+        Inicializa la configuraciรณn desde un archivo YAML
         
         Args:
-            config_path: Ruta al archivo de configuración (default: config.yaml en el directorio del proyecto)
+            config_path: Ruta al archivo de configuraciรณn (default: config.yaml en el directorio del proyecto)
         """
         if config_path is None:
             config_path = DEFAULT_CONFIG_PATH
@@ -50,13 +50,13 @@ class Config:
     
     def _load_config(self) -> Dict[str, Any]:
         """
-        Carga la configuración desde el archivo YAML
+        Carga la configuraciรณn desde el archivo YAML
         
         Returns:
-            Diccionario con la configuración
+            Diccionario con la configuraciรณn
         """
         if not self.config_path.exists():
-            # Si no existe, crear un archivo de configuración por defecto
+            # Si no existe, crear un archivo de configuraciรณn por defecto
             default_config = {
                 'redis': {
                     'host': 'localhost',
@@ -94,34 +94,40 @@ class Config:
                     config = {}
                 return config
         except Exception as e:
-            raise ValueError(f"Error cargando configuración desde {self.config_path}: {e}")
+            raise ValueError(f"Error cargando configuraciรณn desde {self.config_path}: {e}")
     
     def _save_config(self, config: Dict[str, Any]):
-        """Guarda la configuración en el archivo YAML"""
+        """Guarda la configuraciรณn en el archivo YAML"""
         try:
             with open(self.config_path, 'w', encoding='utf-8') as f:
                 yaml.dump(config, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
         except Exception as e:
-            raise ValueError(f"Error guardando configuración en {self.config_path}: {e}")
+            raise ValueError(f"Error guardando configuraciรณn en {self.config_path}: {e}")
     
     def get_redis_config(self) -> Dict[str, Any]:
         """
-        Obtiene la configuración de Redis
+        Obtiene la configuraciรณn de Redis
         
         Returns:
             Diccionario con host, port, db, password
         """
         redis_config = self._config.get('redis', {})
+        password = redis_config.get('password')
+        # Handle password: trim whitespace, preserve None, convert empty string to None
+        if password is not None:
+            password = str(password).strip()
+            password = password if password else None
+        
         return {
             'host': redis_config.get('host', 'localhost'),
             'port': redis_config.get('port', 6379),
             'db': redis_config.get('db', 0),
-            'password': redis_config.get('password') if redis_config.get('password') else None
+            'password': password
         }
     
     def get_sniffer_config(self) -> Dict[str, Any]:
         """
-        Obtiene la configuración del sniffer
+        Obtiene la configuraciรณn del sniffer
         
         Returns:
             Diccionario con interface y filter
@@ -134,23 +140,29 @@ class Config:
     
     def get_clickhouse_config(self) -> Dict[str, Any]:
         """
-        Obtiene la configuración de ClickHouse
+        Obtiene la configuraciรณn de ClickHouse
         
         Returns:
             Diccionario con host, port, database, user, password
         """
         clickhouse_config = self._config.get('clickhouse', {})
+        password = clickhouse_config.get('password')
+        # Handle password: trim whitespace, preserve None, convert empty string to None
+        if password is not None:
+            password = str(password).strip()
+            password = password if password else None
+        
         return {
             'host': clickhouse_config.get('host', 'localhost'),
             'port': clickhouse_config.get('port', 9000),
             'database': clickhouse_config.get('database', 'dns_monitor'),
             'user': clickhouse_config.get('user', 'default'),
-            'password': clickhouse_config.get('password') if clickhouse_config.get('password') else None
+            'password': password
         }
     
     def get_auth_config(self) -> Dict[str, str]:
         """
-        Obtiene la configuración de autenticación
+        Obtiene la configuraciรณn de autenticaciรณn
         
         Returns:
             Diccionario con username como clave y password como valor
@@ -175,13 +187,13 @@ class Config:
     def update_redis_config(self, host: Optional[str] = None, port: Optional[int] = None,
                            db: Optional[int] = None, password: Optional[str] = None):
         """
-        Actualiza la configuración de Redis
+        Actualiza la configuraciรณn de Redis
         
         Args:
             host: Host de Redis
             port: Puerto de Redis
             db: Base de datos Redis
-            password: Contraseña de Redis
+            password: Contraseรฑa de Redis
         """
         if 'redis' not in self._config:
             self._config['redis'] = {}
@@ -201,14 +213,14 @@ class Config:
                                  database: Optional[str] = None, user: Optional[str] = None,
                                  password: Optional[str] = None):
         """
-        Actualiza la configuración de ClickHouse
+        Actualiza la configuraciรณn de ClickHouse
         
         Args:
             host: Host de ClickHouse
             port: Puerto de ClickHouse
             database: Nombre de la base de datos
             user: Usuario de ClickHouse
-            password: Contraseña de ClickHouse
+            password: Contraseรฑa de ClickHouse
         """
         if 'clickhouse' not in self._config:
             self._config['clickhouse'] = {}
@@ -228,7 +240,7 @@ class Config:
     
     def update_sniffer_config(self, interface: Optional[str] = None, filter_str: Optional[str] = None):
         """
-        Actualiza la configuración del sniffer
+        Actualiza la configuraciรณn del sniffer
         
         Args:
             interface: Interfaz de red
@@ -245,16 +257,16 @@ class Config:
         self._save_config(self._config)
 
 
-# Instancia global de configuración
+# Instancia global de configuraciรณn
 _config_instance: Optional[Config] = None
 
 
 def get_config(config_path: Optional[str] = None) -> Config:
     """
-    Obtiene la instancia global de configuración
+    Obtiene la instancia global de configuraciรณn
     
     Args:
-        config_path: Ruta opcional al archivo de configuración
+        config_path: Ruta opcional al archivo de configuraciรณn
         
     Returns:
         Instancia de Config
